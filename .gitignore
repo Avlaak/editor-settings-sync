@@ -1,0 +1,6 @@
+backups/
+logs/
+snapshots/
+vsix_cache/
+*.log
+.DS_Store
