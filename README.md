@@ -93,13 +93,21 @@ Status colors in an interactive terminal:
 
 - red: extension is missing in the target editor
 - orange: target has a different or older version
+- cyan: extension is replaced by an editor alias (`replaced by ...`)
 - blue: extension is ignored because it is native to a specific editor
+
+VS Code ↔ Cursor aliases (shown as `replaced by ...` with both versions; not reinstalled; installs use the VS Code marketplace ID):
+
+- `ms-python.vscode-pylance` ↔ `anysphere.cursorpyright`
+- `ms-vscode-remote.remote-containers` ↔ `anysphere.remote-containers`
+- `ms-vscode-remote.remote-ssh` ↔ `anysphere.remote-ssh`
+
+When installing aliases on Cursor, the wizard uses the VS Code extension ID and Cursor maps it to its replacement.
 
 Built-in editor-native ignore list:
 
-- Cursor: `anysphere.cursorpyright`, `anysphere.remote-ssh`
 - Devin: `codeium.windsurfpyright`
-- Visual Studio Code: `ms-vscode.cpp-devtools`, `ms-dotnettools.csdevkit`, `ms-dotnettools.csharp`, `ms-python.vscode-pylance`
+- Visual Studio Code: `ms-vscode.cpp-devtools`, `ms-dotnettools.csdevkit`, `ms-dotnettools.csharp`
 
 ## Extension Sync Modes
 

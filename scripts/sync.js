@@ -24,16 +24,28 @@ const ANSI = {
   red: "\x1b[31m",
   orange: "\x1b[33m",
   magenta: "\x1b[35m",
+  cyan: "\x1b[36m",
   blue: "\x1b[34m",
   dim: "\x1b[2m",
   reset: "\x1b[0m",
 };
 
 const EDITOR_EXTENSION_IGNORE = {
-  cursor: new Set(["anysphere.cursorpyright", "anysphere.remote-ssh"]),
   devin: new Set(["codeium.windsurfpyright"]),
-  vscode: new Set(["ms-vscode.cpp-devtools", "ms-dotnettools.csdevkit", "ms-dotnettools.csharp", "ms-python.vscode-pylance"]),
+  vscode: new Set(["ms-vscode.cpp-devtools", "ms-dotnettools.csdevkit", "ms-dotnettools.csharp"]),
 };
+
+const EXTENSION_ALIASES = [
+  { vscode: "ms-python.vscode-pylance", cursor: "anysphere.cursorpyright" },
+  { vscode: "ms-vscode-remote.remote-containers", cursor: "anysphere.remote-containers" },
+  { vscode: "ms-vscode-remote.remote-ssh", cursor: "anysphere.remote-ssh" },
+];
+
+const EXTENSION_ALIAS_BY_ID = new Map();
+for (const pair of EXTENSION_ALIASES) {
+  EXTENSION_ALIAS_BY_ID.set(pair.vscode.toLowerCase(), pair);
+  EXTENSION_ALIAS_BY_ID.set(pair.cursor.toLowerCase(), pair);
+}
 
 const EDITORS = [
   {
@@ -538,6 +550,34 @@ function isIgnoredExtension(editorId, extensionId) {
   return Boolean(EDITOR_EXTENSION_IGNORE[editorId] && EDITOR_EXTENSION_IGNORE[editorId].has(extensionId.toLowerCase()));
 }
 
+function editorsUseExtensionAliases(sourceEditorId, targetEditorId) {
+  const ids = new Set([sourceEditorId, targetEditorId]);
+  return ids.has("vscode") && ids.has("cursor");
+}
+
+function extensionAliasCounterpart(extensionId, targetEditorId) {
+  if (targetEditorId !== "vscode" && targetEditorId !== "cursor") return null;
+  const pair = EXTENSION_ALIAS_BY_ID.get(extensionId.toLowerCase());
+  if (!pair) return null;
+  return (targetEditorId === "cursor" ? pair.cursor : pair.vscode).toLowerCase();
+}
+
+function sourceHasExtensionEquivalent(sourceExts, extensionId, sourceEditorId, targetEditorId) {
+  const id = extensionId.toLowerCase();
+  if (sourceExts.has(id)) return true;
+  if (!editorsUseExtensionAliases(sourceEditorId, targetEditorId)) return false;
+  const counterpart = extensionAliasCounterpart(id, sourceEditorId);
+  return counterpart ? sourceExts.has(counterpart) : false;
+}
+
+function extensionInstallId(extensionId, targetEditorId) {
+  const pair = EXTENSION_ALIAS_BY_ID.get(extensionId.toLowerCase());
+  if (pair && (targetEditorId === "cursor" || targetEditorId === "vscode")) {
+    return pair.vscode;
+  }
+  return extensionId.toLowerCase();
+}
+
 function compareVersions(left, right) {
   if (!left || !right || left === right) return 0;
   const leftParts = String(left).split(/[.-]/);
@@ -554,13 +594,30 @@ function compareVersions(left, right) {
   return 0;
 }
 
-function extensionStatus(sourceEditorId, id, sourceVersion, targetVersion) {
-  if (isIgnoredExtension(sourceEditorId, id)) return "ignored";
-  if (targetVersion === undefined) return "missing";
-  if (sourceVersion && targetVersion && sourceVersion !== targetVersion) {
-    return compareVersions(targetVersion, sourceVersion) < 0 ? "older" : "different";
+function extensionMatch(sourceEditorId, targetEditorId, id, sourceVersion, targetExts) {
+  if (isIgnoredExtension(sourceEditorId, id)) return { status: "ignored" };
+  const idLower = id.toLowerCase();
+
+  if (editorsUseExtensionAliases(sourceEditorId, targetEditorId)) {
+    const counterpart = extensionAliasCounterpart(idLower, targetEditorId);
+    if (counterpart && targetExts.has(counterpart)) {
+      return {
+        status: "aliased",
+        aliasId: counterpart,
+        targetVersion: targetExts.get(counterpart),
+      };
+    }
   }
-  return "same";
+
+  const targetVersion = targetExts.has(idLower) ? targetExts.get(idLower) : undefined;
+  if (targetVersion === undefined) return { status: "missing" };
+  if (sourceVersion && targetVersion && sourceVersion !== targetVersion) {
+    return {
+      status: compareVersions(targetVersion, sourceVersion) < 0 ? "older" : "different",
+      targetVersion,
+    };
+  }
+  return { status: "same", targetVersion };
 }
 
 function buildUnifiedRows(source, target, sourceScopes, targetScopes) {
@@ -577,22 +634,23 @@ function buildUnifiedRows(source, target, sourceScopes, targetScopes) {
 
     // Source extensions → check against target
     for (const [id, sourceVersion] of [...sourceExts.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
-      const targetVersion = targetExts.has(id) ? targetExts.get(id) : undefined;
-      const status = extensionStatus(source.id, id, sourceVersion, targetVersion);
-      if (status === "same") continue;
+      const match = extensionMatch(source.id, target.id, id, sourceVersion, targetExts);
+      if (match.status === "same") continue;
       rows.push({
         scope: sourceScope.name,
         scopeDisplayName: sourceScope.displayName || sourceScope.name,
         id,
         sourceVersion,
-        targetVersion,
-        status,
+        targetVersion: match.targetVersion,
+        aliasId: match.aliasId,
+        status: match.status,
       });
     }
 
     // Target-only extensions → "extra"
     for (const [id, targetVersion] of [...targetExts.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
       if (sourceExts.has(id)) continue;
+      if (sourceHasExtensionEquivalent(sourceExts, id, source.id, target.id)) continue;
       if (isIgnoredExtension(target.id, id)) {
         rows.push({
           scope: sourceScope.name,
@@ -1301,6 +1359,7 @@ function pairSummaryLines(source, target, analysis) {
     `Older in target:   ${counts.older || 0}`,
     `Different version: ${counts.different || 0}`,
     `Extra in target:   ${counts.extra || 0}`,
+    `Replaced (alias):  ${counts.aliased || 0}`,
     `Ignored:           ${counts.ignored || 0}`,
     "",
     `Settings only in source: ${analysis.onlySourceSettings.length}`,
@@ -1329,7 +1388,7 @@ function renderExtensionRows(rows, sourceId, targetId) {
       row.id,
       row.sourceVersion !== undefined ? (row.sourceVersion || "-") : "—",
       row.targetVersion !== undefined ? (row.targetVersion || "-") : "—",
-      statusLabel(row.status),
+      statusLabel(row),
     ]);
     table(["Extension", sourceId, targetId, "Status"], tableRows);
   }
@@ -1348,18 +1407,20 @@ function bufferExtensionRows(rows, sourceId, targetId) {
       row.id,
       row.sourceVersion !== undefined ? (row.sourceVersion || "-") : "—",
       row.targetVersion !== undefined ? (row.targetVersion || "-") : "—",
-      statusLabel(row.status),
+      statusLabel(row),
     ]);
     buf.push(...bufferTable(["Extension", sourceId, targetId, "Status"], tableRows));
   }
   return buf;
 }
 
-function statusLabel(status) {
+function statusLabel(row) {
+  const status = typeof row === "string" ? row : row.status;
   if (status === "missing") return color("missing", ANSI.red);
   if (status === "extra") return color("extra", ANSI.dim);
   if (status === "older") return color("older", ANSI.orange);
   if (status === "different") return color("different", ANSI.magenta);
+  if (status === "aliased") return color(`replaced by ${row.aliasId}`, ANSI.cyan);
   if (status === "ignored") return color("ignored", ANSI.blue);
   return status;
 }
@@ -1481,12 +1542,13 @@ async function runInteractive() {
         // Build list of tasks based on selected mode
         const tasks = [];
         for (const row of analysis.extensionRows) {
-          if (row.status === "ignored") continue;
+          if (row.status === "ignored" || row.status === "aliased") continue;
 
           if (mode === "missing") {
             if (row.status === "missing") {
               tasks.push({
-                id: row.id,
+                id: extensionInstallId(row.id, target.id),
+                sourceId: row.id,
                 profileDisplayName: row.scopeDisplayName,
                 version: row.sourceVersion,
                 action: "install",
@@ -1495,7 +1557,8 @@ async function runInteractive() {
           } else if (mode === "missing_update") {
             if (row.status === "missing" || row.status === "older") {
               tasks.push({
-                id: row.id,
+                id: extensionInstallId(row.id, target.id),
+                sourceId: row.id,
                 profileDisplayName: row.scopeDisplayName,
                 version: row.sourceVersion,
                 action: "install",
@@ -1504,7 +1567,8 @@ async function runInteractive() {
           } else if (mode === "full_keep") {
             if (row.status === "missing" || row.status === "older" || row.status === "different") {
               tasks.push({
-                id: row.id,
+                id: extensionInstallId(row.id, target.id),
+                sourceId: row.id,
                 profileDisplayName: row.scopeDisplayName,
                 version: row.sourceVersion,
                 action: "install",
@@ -1513,7 +1577,8 @@ async function runInteractive() {
           } else if (mode === "full_clean") {
             if (row.status === "missing" || row.status === "older" || row.status === "different") {
               tasks.push({
-                id: row.id,
+                id: extensionInstallId(row.id, target.id),
+                sourceId: row.id,
                 profileDisplayName: row.scopeDisplayName,
                 version: row.sourceVersion,
                 action: "install",
@@ -1540,6 +1605,7 @@ async function runInteractive() {
         const installs = tasks.filter((t) => t.action === "install");
         const uninstalls = tasks.filter((t) => t.action === "uninstall");
         const ignoredCount = analysis.extensionRows.filter((row) => row.status === "ignored").length;
+        const aliasedCount = analysis.extensionRows.filter((row) => row.status === "aliased").length;
 
         const renderInstall = () => {
           box("Extension Sync", [
@@ -1547,12 +1613,13 @@ async function runInteractive() {
             `Planned actions: ${tasks.length}`,
             `  - Install/update: ${installs.length}`,
             `  - Uninstall: ${uninstalls.length}`,
+            `Replaced (alias): ${aliasedCount}`,
             `Ignored: ${ignoredCount}`,
             `Target CLI: ${target.cliPath || "not found"}`,
           ]);
 
           // Show only rows that correspond to our tasks
-          const tasksKeys = new Set(tasks.map((t) => `${t.profileDisplayName || "Default"}:${t.id}`));
+          const tasksKeys = new Set(tasks.map((t) => `${t.profileDisplayName || "Default"}:${t.sourceId || t.id}`));
           const filteredRows = analysis.extensionRows.filter((row) => tasksKeys.has(`${row.scopeDisplayName || "Default"}:${row.id}`));
           if (filteredRows.length) {
             renderExtensionRows(filteredRows, source.id, target.id);
