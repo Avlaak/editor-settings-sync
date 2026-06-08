@@ -1331,6 +1331,43 @@ function scopeHeader(displayName, scopeKey) {
   return `── ${label} `;
 }
 
+function bufferEditorExtensions(editor) {
+  const snapshot = path.join(SNAPSHOTS, editor.id);
+  const buf = [];
+
+  if (!exists(snapshot)) {
+    buf.push(...bufferBox("Installed Extensions", [
+      `Editor: ${editor.name} (${editor.id})`,
+      "No snapshot found. Collect snapshots first.",
+    ]));
+    return buf;
+  }
+
+  const scopes = readExtensionScopes(snapshot, editor);
+  const installed = readExtensionIds(snapshot).length;
+  buf.push(...bufferBox("Installed Extensions", [
+    `Editor: ${editor.name} (${editor.id})`,
+    `Installed (global): ${installed}`,
+    `Scopes: ${scopes.length}`,
+  ]));
+
+  for (const scope of scopes) {
+    const entries = [...scope.extensions.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+    buf.push("");
+    const header = scopeHeader(scope.displayName, scope.name);
+    const pad = Math.max(0, terminalWidth() - visibleLength(header) - 1);
+    buf.push(color(`${header}${"─".repeat(pad)}`, ANSI.dim));
+    if (!entries.length) {
+      buf.push(color("  (none)", ANSI.dim));
+      continue;
+    }
+    const tableRows = entries.map(([id, version]) => [id, version || "-"]);
+    buf.push(...bufferTable(["Extension", "Version"], tableRows));
+  }
+
+  return buf;
+}
+
 function renderPair(source, target, analysis) {
   renderPairSummary(source, target, analysis);
   if (analysis.extensionRows.length) {
@@ -1479,9 +1516,10 @@ async function runInteractive() {
     while (true) {
       const action = await selectMenu("Actions", [
         { key: "1", label: "Collect/update snapshots", value: "collect" },
-        { key: "2", label: "Analyze an editor pair", value: "analyze" },
-        { key: "3", label: "Sync settings/profiles", value: "sync" },
-        { key: "4", label: "Sync extensions via CLI", value: "extensions" },
+        { key: "2", label: "List extensions for one editor", value: "list_extensions" },
+        { key: "3", label: "Analyze an editor pair", value: "analyze" },
+        { key: "4", label: "Sync settings/profiles", value: "sync" },
+        { key: "5", label: "Sync extensions via CLI", value: "extensions" },
         { key: "q", label: "Quit", value: "q" },
       ], {
         fallback: "Choice: ",
@@ -1492,6 +1530,23 @@ async function runInteractive() {
       if (action === "collect") {
         collectSnapshots(editors);
         await pauseScreen(() => renderDashboard(editors), "Snapshots Updated");
+      } else if (action === "list_extensions") {
+        const editor = await chooseEditor(editors, "List extensions for", editors);
+        if (!editor) continue;
+        const snapshot = path.join(SNAPSHOTS, editor.id);
+        if (!exists(snapshot)) {
+          const collectNow = await selectMenu(`No snapshot for ${editor.name}. Collect now?`, [
+            { key: "y", label: "Yes", value: "yes" },
+            { key: "n", label: "No", value: "no" },
+          ], {
+            defaultIndex: 0,
+            fallback: `Collect snapshot for ${editor.name} now? [Y/n] `,
+            renderFrame: () => renderDashboard(editors),
+          });
+          if (collectNow !== "yes") continue;
+          collectEditor(editor);
+        }
+        await scrollableView(() => bufferEditorExtensions(editor));
       } else if (action === "analyze") {
         const source = await chooseEditor(editors.filter((e) => e.id === "vscode" || e.id === "cursor"), "Source (baseline)", editors);
         if (!source) continue;
