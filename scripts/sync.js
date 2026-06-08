@@ -1601,10 +1601,11 @@ async function runInteractive() {
 
 function printHelp() {
   line("Usage:");
-  line("  ./scripts/sync.sh              # interactive TUI");
-  line("  ./scripts/sync.sh --detect     # print detected editors");
-  line("  ./scripts/sync.sh --collect    # collect all detected editors");
-  line("  ./scripts/sync.sh --analyze A B");
+  line("  ./sync.sh | sync.bat           # interactive TUI");
+  line("  ./sync.sh --detect             # print detected editors");
+  line("  ./sync.sh --collect            # collect all detected editors");
+  line("  ./sync.sh --analyze A B");
+  line("  node scripts/sync.js ...       # direct launch on any OS");
 }
 
 function runCli() {

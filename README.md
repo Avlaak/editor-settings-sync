@@ -23,9 +23,19 @@ The project has no npm dependencies.
 
 ## Quick Start
 
+macOS / Linux:
+
 ```sh
-./scripts/sync.sh
+./sync.sh
 ```
+
+Windows (Command Prompt or PowerShell):
+
+```bat
+sync.bat
+```
+
+You can also run `node scripts/sync.js` directly on any platform.
 
 The interactive UI supports:
 
@@ -37,11 +47,22 @@ In a real terminal, the wizard uses an alternate fullscreen buffer and redraws t
 
 ## Commands
 
+macOS / Linux:
+
 ```sh
-./scripts/sync.sh --detect
-./scripts/sync.sh --collect
-./scripts/sync.sh --analyze vscode cursor
-./scripts/sync.sh --analyze vscode devin
+./sync.sh --detect
+./sync.sh --collect
+./sync.sh --analyze vscode cursor
+./sync.sh --analyze vscode devin
+```
+
+Windows:
+
+```bat
+sync.bat --detect
+sync.bat --collect
+sync.bat --analyze vscode cursor
+sync.bat --analyze vscode devin
 ```
 
 `--collect` creates local runtime snapshots under `snapshots/`. These files are ignored by git because they may contain local paths and private settings.
@@ -106,6 +127,7 @@ When applying settings from one editor to another, the wizard creates a timestam
 ## Project Layout
 
 - `scripts/sync.js` - main cross-platform sync wizard
-- `scripts/sync.sh` - shell launcher
+- `sync.sh` - launcher for macOS and Linux
+- `sync.bat` - launcher for Windows
 
 There is intentionally no user-maintained editor config in the repository. Discovery uses built-in platform path candidates and CLI lookup. That discovery layer can grow into a maintained path database for VS Code-like editors.
