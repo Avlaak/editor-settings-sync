@@ -12,6 +12,7 @@ const SNAPSHOTS = path.join(ROOT, "snapshots");
 const BACKUPS = path.join(ROOT, "backups");
 const VSIX_CACHE = path.join(ROOT, "vsix_cache");
 const SAFE_USER_ITEMS = ["settings.json", "keybindings.json", "extensions.json", "mcp.json", "chatLanguageModels.json", "snippets"];
+const PROFILE_USER_ITEMS = SAFE_USER_ITEMS.filter((item) => item !== "extensions.json");
 const ANSI = {
   clearLine: "\x1b[2K",
   clearScreen: "\x1b[2J\x1b[H",
@@ -260,8 +261,9 @@ function supportsProfiles(editor) {
   return editor.supportsProfiles !== false;
 }
 
-function copyProfiles(src, dst) {
+function copyProfiles(src, dst, { includeExtensions = false } = {}) {
   if (!isDir(src)) return;
+  const items = includeExtensions ? SAFE_USER_ITEMS : PROFILE_USER_ITEMS;
   ensureDir(dst);
   for (const profileName of fs.readdirSync(src)) {
     if (profileName === "builtin") continue;
@@ -269,7 +271,7 @@ function copyProfiles(src, dst) {
     if (!isDir(profileDir)) continue;
     const profileOut = path.join(dst, profileName);
     ensureDir(profileOut);
-    for (const item of SAFE_USER_ITEMS) copyIfExists(path.join(profileDir, item), path.join(profileOut, item));
+    for (const item of items) copyIfExists(path.join(profileDir, item), path.join(profileOut, item));
 
     const agentsDir = path.join(profileDir, "agents");
     if (!isDir(agentsDir)) continue;
@@ -278,7 +280,7 @@ function copyProfiles(src, dst) {
       if (!isDir(agentDir)) continue;
       const agentOut = path.join(profileOut, "agents", agentName);
       ensureDir(agentOut);
-      for (const item of SAFE_USER_ITEMS) copyIfExists(path.join(agentDir, item), path.join(agentOut, item));
+      for (const item of items) copyIfExists(path.join(agentDir, item), path.join(agentOut, item));
     }
   }
 }
@@ -315,7 +317,7 @@ function collectEditor(editor) {
       copyIfExists(path.join(editor.userDir, item), path.join(out, "user", item));
     }
     if (supportsProfiles(editor)) {
-      copyProfiles(path.join(editor.userDir, "profiles"), path.join(out, "user", "profiles"));
+      copyProfiles(path.join(editor.userDir, "profiles"), path.join(out, "user", "profiles"), { includeExtensions: true });
       copyIfExists(path.join(editor.userDir, "globalStorage", "storage.json"), path.join(out, "user", "globalStorage", "storage.json"));
     }
   }
@@ -752,8 +754,13 @@ function backupAndCopy(source, target, items) {
   for (const item of items) {
     const sourceItem = path.join(sourceUser, item);
     if (!exists(sourceItem)) continue;
-    rmrf(path.join(target.userDir, item));
-    copyRecursive(sourceItem, path.join(target.userDir, item));
+    const targetItem = path.join(target.userDir, item);
+    rmrf(targetItem);
+    if (item === "profiles") {
+      copyProfiles(sourceItem, targetItem);
+    } else {
+      copyRecursive(sourceItem, targetItem);
+    }
   }
   return backupDir;
 }
