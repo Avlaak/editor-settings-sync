@@ -257,6 +257,21 @@ function copyIfExists(src, dst) {
   if (exists(src)) copyRecursive(src, dst);
 }
 
+function spawnEditorCli(cliPath, args) {
+  const options = {
+    encoding: "utf8",
+    shell: false,
+    windowsHide: true,
+    stdio: ["ignore", "pipe", "pipe"],
+  };
+
+  if (process.platform === "win32" && /\.(cmd|bat)$/i.test(cliPath)) {
+    return spawnSync(process.env.ComSpec || "cmd.exe", ["/d", "/s", "/c", cliPath, ...args], options);
+  }
+
+  return spawnSync(cliPath, args, options);
+}
+
 function supportsProfiles(editor) {
   return editor.supportsProfiles !== false;
 }
@@ -287,11 +302,7 @@ function copyProfiles(src, dst, { includeExtensions = false } = {}) {
 
 function runEditorCli(editor, args, stdoutFile, stderrFile) {
   if (!editor.cliPath) return;
-  const result = spawnSync(editor.cliCommand, args, {
-    encoding: "utf8",
-    shell: process.platform === "win32",
-    stdio: ["ignore", "pipe", "pipe"],
-  });
+  const result = spawnEditorCli(editor.cliPath, args);
   fs.writeFileSync(stdoutFile, result.stdout || "");
   fs.writeFileSync(stderrFile, result.stderr || "");
 }
@@ -795,11 +806,7 @@ async function syncExtensions(source, target, tasks) {
 
     if (task.action === "uninstall") {
       const args = [...baseArgs, "--uninstall-extension", task.id];
-      const result = spawnSync(target.cliCommand, args, {
-        encoding: "utf8",
-        shell: process.platform === "win32",
-        stdio: ["ignore", "pipe", "pipe"],
-      });
+      const result = spawnEditorCli(target.cliPath, args);
       if (result.status === 0) {
         ok += 1;
         line("OK");
@@ -813,11 +820,7 @@ async function syncExtensions(source, target, tasks) {
 
     // Action: install
     const installArgs = [...baseArgs, "--install-extension", task.id];
-    const result = spawnSync(target.cliCommand, installArgs, {
-      encoding: "utf8",
-      shell: process.platform === "win32",
-      stdio: ["ignore", "pipe", "pipe"],
-    });
+    const result = spawnEditorCli(target.cliPath, installArgs);
 
     if (result.status === 0) {
       ok += 1;
@@ -832,11 +835,7 @@ async function syncExtensions(source, target, tasks) {
       process.stdout.write(`Downloaded from ${downloaded.source}. Installing... `);
 
       const vsixArgs = [...baseArgs, "--install-extension", downloaded.path];
-      const vsixResult = spawnSync(target.cliCommand, vsixArgs, {
-        encoding: "utf8",
-        shell: process.platform === "win32",
-        stdio: ["ignore", "pipe", "pipe"],
-      });
+      const vsixResult = spawnEditorCli(target.cliPath, vsixArgs);
 
       if (vsixResult.status === 0) {
         ok += 1;
