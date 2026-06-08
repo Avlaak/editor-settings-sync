@@ -31,20 +31,22 @@ const ANSI = {
 };
 
 const EDITOR_EXTENSION_IGNORE = {
-  devin: new Set(["codeium.windsurfpyright"]),
   vscode: new Set(["ms-vscode.cpp-devtools", "ms-dotnettools.csdevkit", "ms-dotnettools.csharp"]),
 };
 
 const EXTENSION_ALIASES = [
-  { vscode: "ms-python.vscode-pylance", cursor: "anysphere.cursorpyright" },
+  { vscode: "ms-python.vscode-pylance", cursor: "anysphere.cursorpyright", devin: "codeium.windsurfpyright" },
   { vscode: "ms-vscode-remote.remote-containers", cursor: "anysphere.remote-containers" },
   { vscode: "ms-vscode-remote.remote-ssh", cursor: "anysphere.remote-ssh" },
 ];
 
+const ALIAS_EDITORS = new Set(["vscode", "cursor", "devin"]);
+
 const EXTENSION_ALIAS_BY_ID = new Map();
 for (const pair of EXTENSION_ALIASES) {
-  EXTENSION_ALIAS_BY_ID.set(pair.vscode.toLowerCase(), pair);
-  EXTENSION_ALIAS_BY_ID.set(pair.cursor.toLowerCase(), pair);
+  for (const extId of Object.values(pair)) {
+    EXTENSION_ALIAS_BY_ID.set(extId.toLowerCase(), pair);
+  }
 }
 
 const EDITORS = [
@@ -551,15 +553,14 @@ function isIgnoredExtension(editorId, extensionId) {
 }
 
 function editorsUseExtensionAliases(sourceEditorId, targetEditorId) {
-  const ids = new Set([sourceEditorId, targetEditorId]);
-  return ids.has("vscode") && ids.has("cursor");
+  return ALIAS_EDITORS.has(sourceEditorId) && ALIAS_EDITORS.has(targetEditorId);
 }
 
 function extensionAliasCounterpart(extensionId, targetEditorId) {
-  if (targetEditorId !== "vscode" && targetEditorId !== "cursor") return null;
   const pair = EXTENSION_ALIAS_BY_ID.get(extensionId.toLowerCase());
   if (!pair) return null;
-  return (targetEditorId === "cursor" ? pair.cursor : pair.vscode).toLowerCase();
+  const counterpart = pair[targetEditorId];
+  return counterpart ? counterpart.toLowerCase() : null;
 }
 
 function sourceHasExtensionEquivalent(sourceExts, extensionId, sourceEditorId, targetEditorId) {
@@ -572,10 +573,12 @@ function sourceHasExtensionEquivalent(sourceExts, extensionId, sourceEditorId, t
 
 function extensionInstallId(extensionId, targetEditorId) {
   const pair = EXTENSION_ALIAS_BY_ID.get(extensionId.toLowerCase());
-  if (pair && (targetEditorId === "cursor" || targetEditorId === "vscode")) {
+  if (!pair) return extensionId.toLowerCase();
+  if (targetEditorId === "cursor" || targetEditorId === "vscode") {
     return pair.vscode;
   }
-  return extensionId.toLowerCase();
+  const targetAlias = pair[targetEditorId];
+  return targetAlias ? targetAlias.toLowerCase() : extensionId.toLowerCase();
 }
 
 function compareVersions(left, right) {
@@ -595,7 +598,6 @@ function compareVersions(left, right) {
 }
 
 function extensionMatch(sourceEditorId, targetEditorId, id, sourceVersion, targetExts) {
-  if (isIgnoredExtension(sourceEditorId, id)) return { status: "ignored" };
   const idLower = id.toLowerCase();
 
   if (editorsUseExtensionAliases(sourceEditorId, targetEditorId)) {
@@ -608,6 +610,8 @@ function extensionMatch(sourceEditorId, targetEditorId, id, sourceVersion, targe
       };
     }
   }
+
+  if (isIgnoredExtension(sourceEditorId, id)) return { status: "ignored" };
 
   const targetVersion = targetExts.has(idLower) ? targetExts.get(idLower) : undefined;
   if (targetVersion === undefined) return { status: "missing" };
