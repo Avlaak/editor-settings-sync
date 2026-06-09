@@ -5,6 +5,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const readline = require("readline");
+const zlib = require("zlib");
 const { spawnSync } = require("child_process");
 
 const ROOT = path.resolve(__dirname, "..");
@@ -762,14 +763,92 @@ function ensureVsixCache() {
   }
 }
 
+function marketplaceTargetPlatform() {
+  const arch =
+    process.arch === "x64" ? "x64" :
+    process.arch === "arm64" ? "arm64" :
+    process.arch === "ia32" ? "ia32" :
+    process.arch === "arm" ? "armhf" :
+    "";
+  if (!arch) return "";
+  if (process.platform === "win32") return `win32-${arch}`;
+  if (process.platform === "darwin") return `darwin-${arch}`;
+  if (process.platform === "linux") return `linux-${arch}`;
+  return "";
+}
+
+function zipEntryBuffer(zipBuffer, entryName) {
+  const endSearchStart = Math.max(0, zipBuffer.length - 0xffff - 22);
+  let eocd = -1;
+  for (let pos = zipBuffer.length - 22; pos >= endSearchStart; pos -= 1) {
+    if (zipBuffer.readUInt32LE(pos) === 0x06054b50) {
+      eocd = pos;
+      break;
+    }
+  }
+  if (eocd === -1) return null;
+
+  const centralDirSize = zipBuffer.readUInt32LE(eocd + 12);
+  const centralDirOffset = zipBuffer.readUInt32LE(eocd + 16);
+  let pos = centralDirOffset;
+  const end = centralDirOffset + centralDirSize;
+
+  while (pos < end && zipBuffer.readUInt32LE(pos) === 0x02014b50) {
+    const method = zipBuffer.readUInt16LE(pos + 10);
+    const compressedSize = zipBuffer.readUInt32LE(pos + 20);
+    const nameLength = zipBuffer.readUInt16LE(pos + 28);
+    const extraLength = zipBuffer.readUInt16LE(pos + 30);
+    const commentLength = zipBuffer.readUInt16LE(pos + 32);
+    const localHeaderOffset = zipBuffer.readUInt32LE(pos + 42);
+    const name = zipBuffer.slice(pos + 46, pos + 46 + nameLength).toString("utf8");
+
+    if (name === entryName) {
+      if (zipBuffer.readUInt32LE(localHeaderOffset) !== 0x04034b50) return null;
+      const localNameLength = zipBuffer.readUInt16LE(localHeaderOffset + 26);
+      const localExtraLength = zipBuffer.readUInt16LE(localHeaderOffset + 28);
+      const dataStart = localHeaderOffset + 30 + localNameLength + localExtraLength;
+      const data = zipBuffer.slice(dataStart, dataStart + compressedSize);
+      if (method === 0) return data;
+      if (method === 8) return zlib.inflateRawSync(data);
+      return null;
+    }
+
+    pos += 46 + nameLength + extraLength + commentLength;
+  }
+
+  return null;
+}
+
+function vsixTargetPlatform(vsixBuffer) {
+  try {
+    const manifest = zipEntryBuffer(vsixBuffer, "extension.vsixmanifest");
+    if (!manifest) return "";
+    const match = manifest.toString("utf8").match(/\bTargetPlatform="([^"]+)"/);
+    return match ? match[1] : "";
+  } catch {
+    return "";
+  }
+}
+
+function vsixMatchesTargetPlatform(vsixBuffer, targetPlatform) {
+  const vsixPlatform = vsixTargetPlatform(vsixBuffer);
+  return !targetPlatform || !vsixPlatform || vsixPlatform === targetPlatform;
+}
+
 async function downloadVsix(id, version) {
   ensureVsixCache();
 
-  const cacheName = version ? `${id}-${version}.vsix` : `${id}-latest.vsix`;
+  const targetPlatform = marketplaceTargetPlatform();
+  const platformSuffix = targetPlatform ? `-${targetPlatform}` : "";
+  const cacheName = version ? `${id}-${version}${platformSuffix}.vsix` : `${id}-latest${platformSuffix}.vsix`;
   const cachedPath = path.join(VSIX_CACHE, cacheName);
 
   if (exists(cachedPath)) {
-    return { path: cachedPath, source: "cache" };
+    const cached = fs.readFileSync(cachedPath);
+    if (vsixMatchesTargetPlatform(cached, targetPlatform)) {
+      return { path: cachedPath, source: "cache" };
+    }
+    fs.unlinkSync(cachedPath);
   }
 
   const parts = id.split(".");
@@ -778,16 +857,27 @@ async function downloadVsix(id, version) {
 
   const versionStr = version || "latest";
   const marketUrl = `https://marketplace.visualstudio.com/_apis/public/gallery/publishers/${publisher}/vsextensions/${extensionName}/${versionStr}/vspackage`;
+  const marketUrls = targetPlatform
+    ? [`${marketUrl}?targetPlatform=${encodeURIComponent(targetPlatform)}`, marketUrl]
+    : [marketUrl];
 
-  try {
-    const res = await fetch(marketUrl);
-    if (res.status === 200) {
-      const buf = await res.arrayBuffer();
-      fs.writeFileSync(cachedPath, Buffer.from(buf));
-      return { path: cachedPath, source: "VS Code Marketplace" };
+  for (const url of marketUrls) {
+    try {
+      const res = await fetch(url);
+      if (res.status === 200) {
+        const buf = Buffer.from(await res.arrayBuffer());
+        if (!vsixMatchesTargetPlatform(buf, targetPlatform)) continue;
+        fs.writeFileSync(cachedPath, buf);
+        return {
+          path: cachedPath,
+          source: targetPlatform && url.includes("targetPlatform=")
+            ? `VS Code Marketplace (${targetPlatform})`
+            : "VS Code Marketplace",
+        };
+      }
+    } catch (e) {
+      // try next
     }
-  } catch (e) {
-    // try next
   }
 
   // Try Open VSX as fallback
@@ -801,8 +891,11 @@ async function downloadVsix(id, version) {
       if (meta.files && meta.files.download) {
         const downloadRes = await fetch(meta.files.download);
         if (downloadRes.status === 200) {
-          const buf = await downloadRes.arrayBuffer();
-          fs.writeFileSync(cachedPath, Buffer.from(buf));
+          const buf = Buffer.from(await downloadRes.arrayBuffer());
+          if (!vsixMatchesTargetPlatform(buf, targetPlatform)) {
+            throw new Error(`Downloaded VSIX targets ${vsixTargetPlatform(buf)}, expected ${targetPlatform}.`);
+          }
+          fs.writeFileSync(cachedPath, buf);
           return { path: cachedPath, source: "Open VSX" };
         }
       }
