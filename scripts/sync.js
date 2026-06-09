@@ -17,7 +17,8 @@ const PROFILE_USER_ITEMS = SAFE_USER_ITEMS.filter((item) => item !== "extensions
 const REQUIRED_PROFILE_DIRS = ["globalStorage"];
 const ANSI = {
   clearLine: "\x1b[2K",
-  clearScreen: "\x1b[2J\x1b[H",
+  clearScreen: "\x1b[H\x1b[J",
+  cursorColumnStart: "\x1b[1G",
   cursorHide: "\x1b[?25l",
   cursorShow: "\x1b[?25h",
   enterAlt: "\x1b[?1049h",
@@ -1189,7 +1190,22 @@ function prompt(question) {
 }
 
 function moveCursorUp(lines) {
-  if (lines > 0) process.stdout.write(`\x1b[${lines}A`);
+  if (lines > 0) process.stdout.write(`\x1b[${lines}A${ANSI.cursorColumnStart}`);
+}
+
+function interactiveLineWidth() {
+  return Math.max(1, (process.stdout.columns || 100) - 1);
+}
+
+function interactiveLine(text) {
+  return truncateText(text, interactiveLineWidth());
+}
+
+function renderInteractiveLines(rows, previousLines) {
+  const rendered = rows.slice();
+  while (rendered.length < previousLines) rendered.push("");
+  process.stdout.write(rendered.map((row) => `${ANSI.cursorColumnStart}${ANSI.clearLine}${row}`).join("\n"));
+  return rendered.length;
 }
 
 async function selectMenu(title, options, opts = {}) {
@@ -1214,31 +1230,42 @@ async function selectMenu(title, options, opts = {}) {
 
   let selected = opts.defaultIndex || 0;
   let renderedLines = 0;
+  let frameRendered = false;
+  let frameColumns = 0;
+  let frameRows = 0;
 
   const render = () => {
-    if (opts.renderFrame) {
+    const columns = process.stdout.columns || 0;
+    const rowsCount = process.stdout.rows || 0;
+    const shouldRenderFrame = opts.renderFrame && (
+      !frameRendered || columns !== frameColumns || rowsCount !== frameRows
+    );
+
+    if (shouldRenderFrame) {
       clear();
       opts.renderFrame();
       line("");
       renderedLines = 0;
+      frameRendered = true;
+      frameColumns = columns;
+      frameRows = rowsCount;
     } else if (renderedLines) {
-      moveCursorUp(renderedLines);
+      moveCursorUp(renderedLines - 1);
     }
 
     const rows = [];
-    rows.push(title);
-    rows.push("↑/↓ move, Enter select, q quit");
+    rows.push(interactiveLine(title));
+    rows.push(interactiveLine("↑/↓ move, Enter select, q quit"));
     rows.push("");
     for (let i = 0; i < options.length; i += 1) {
       const option = options[i];
       const prefix = i === selected ? "❯" : " ";
       const key = option.key ? `${option.key}. ` : "";
-      const label = `${prefix} ${key}${option.label}`;
+      const label = interactiveLine(`${prefix} ${key}${option.label}`);
       rows.push(i === selected ? `${ANSI.inverse}${label}${ANSI.reset}` : label);
-      if (option.description) rows.push(`    ${option.description}`);
+      if (option.description) rows.push(interactiveLine(`    ${option.description}`));
     }
-    renderedLines = rows.length;
-    process.stdout.write(rows.map((row) => `${ANSI.clearLine}${row}`).join("\n"));
+    renderedLines = renderInteractiveLines(rows, renderedLines);
   };
 
   return new Promise((resolve) => {
