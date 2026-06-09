@@ -1217,7 +1217,34 @@ function bufferTable(headers, rows) {
 }
 
 function clear() {
-  if (process.stdout.isTTY) process.stdout.write(ANSI.clearScreen);
+  if (process.stdout.isTTY) {
+    process.stdout.write(ANSI.clearScreen);
+    trackedScreenRows = [];
+  }
+}
+
+let trackedScreenRows = [];
+
+function captureOutput(fn) {
+  const originalWrite = process.stdout.write;
+  const chunks = [];
+  process.stdout.write = function capturedWrite(chunk, encoding, callback) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk.toString(typeof encoding === "string" ? encoding : "utf8") : String(chunk));
+    const cb = typeof encoding === "function" ? encoding : callback;
+    if (cb) cb();
+    return true;
+  };
+  try {
+    fn();
+  } finally {
+    process.stdout.write = originalWrite;
+  }
+  return chunks.join("");
+}
+
+function outputRows(output) {
+  const normalized = output.replace(/\r\n/g, "\n").replace(/\n$/, "");
+  return normalized ? normalized.split("\n") : [];
 }
 
 function box(title, rows) {
@@ -1301,6 +1328,47 @@ function renderInteractiveLines(rows, previousLines) {
   return rendered.length;
 }
 
+function renderScreenRows(rows, previousRows = null) {
+  const tracked = previousRows === null;
+  const baseRows = tracked ? trackedScreenRows : previousRows;
+  const nextRows = rows.slice();
+  const count = Math.max(nextRows.length, baseRows.length);
+  const writes = [];
+  if (!baseRows.length) writes.push(ANSI.clearScreen);
+  for (let i = 0; i < count; i += 1) {
+    const row = nextRows[i] || "";
+    if (baseRows[i] === row) continue;
+    writes.push(`\x1b[${i + 1};1H${ANSI.clearLine}${row}`);
+  }
+  if (writes.length) process.stdout.write(writes.join(""));
+  if (tracked) trackedScreenRows = nextRows;
+  return nextRows;
+}
+
+function sliceAroundIndex(rows, selectedRow, maxRows) {
+  if (maxRows <= 0 || rows.length <= maxRows) return rows;
+  const offset = Math.max(0, Math.min(selectedRow - Math.floor(maxRows / 2), rows.length - maxRows));
+  const sliced = rows.slice(offset, offset + maxRows);
+  if (offset > 0) sliced[0] = color("  ↑ more", ANSI.dim);
+  if (offset + maxRows < rows.length) sliced[sliced.length - 1] = color("  ↓ more", ANSI.dim);
+  return sliced;
+}
+
+function fitMenuRows(frameRows, menuRows, selectedMenuRow) {
+  const height = terminalHeight();
+  if (!frameRows.length) {
+    return sliceAroundIndex(menuRows, selectedMenuRow, height);
+  }
+
+  const minMenuRows = Math.min(menuRows.length, Math.max(5, Math.min(height, 10)));
+  const maxFrameRows = Math.max(0, height - minMenuRows - 1);
+  const visibleFrame = frameRows.length > maxFrameRows
+    ? [...frameRows.slice(0, Math.max(0, maxFrameRows - 1)), color("  …", ANSI.dim)]
+    : frameRows;
+  const menuHeight = Math.max(1, height - visibleFrame.length - 1);
+  return [...visibleFrame, "", ...sliceAroundIndex(menuRows, selectedMenuRow, menuHeight)];
+}
+
 async function selectMenu(title, options, opts = {}) {
   const fallback = opts.fallback || "";
   if (nonInteractive || !process.stdin.isTTY || !process.stdout.isTTY) {
@@ -1326,6 +1394,7 @@ async function selectMenu(title, options, opts = {}) {
   let frameRendered = false;
   let frameColumns = 0;
   let frameRows = 0;
+  let frameBuffer = [];
 
   const render = () => {
     const columns = process.stdout.columns || 0;
@@ -1335,28 +1404,32 @@ async function selectMenu(title, options, opts = {}) {
     );
 
     if (shouldRenderFrame) {
-      clear();
-      opts.renderFrame();
-      line("");
-      renderedLines = 0;
+      frameBuffer = outputRows(captureOutput(opts.renderFrame));
       frameRendered = true;
       frameColumns = columns;
       frameRows = rowsCount;
-    } else if (renderedLines) {
+    } else if (!opts.renderFrame && renderedLines) {
       moveCursorUp(renderedLines - 1);
     }
 
-    const rows = [];
-    rows.push(interactiveLine(title));
-    rows.push(interactiveLine("↑/↓ move, Enter select, q quit"));
-    rows.push("");
+    const rows = [
+      interactiveLine(title),
+      interactiveLine("↑/↓ move, Enter select, q quit"),
+      "",
+    ];
+    let selectedMenuRow = rows.length;
     for (let i = 0; i < options.length; i += 1) {
       const option = options[i];
       const prefix = i === selected ? "❯" : " ";
       const key = option.key ? `${option.key}. ` : "";
       const label = interactiveLine(`${prefix} ${key}${option.label}`);
+      if (i === selected) selectedMenuRow = rows.length;
       rows.push(i === selected ? `${ANSI.inverse}${label}${ANSI.reset}` : label);
       if (option.description) rows.push(interactiveLine(`    ${option.description}`));
+    }
+    if (opts.renderFrame) {
+      renderScreenRows(fitMenuRows(frameBuffer, rows, selectedMenuRow));
+      return;
     }
     renderedLines = renderInteractiveLines(rows, renderedLines);
   };
@@ -1437,18 +1510,19 @@ async function scrollableView(buildBuffer) {
   process.stdout.write(ANSI.cursorHide);
 
   const render = () => {
-    clear();
+    const rows = [];
     const visible = buffer.slice(scrollOffset, scrollOffset + viewportHeight);
-    for (const l of visible) line(l);
+    rows.push(...visible);
     const remaining = height - visible.length - footerLines;
-    for (let i = 0; i < remaining; i += 1) line("");
+    for (let i = 0; i < remaining; i += 1) rows.push("");
     if (needsScroll) {
       const pct = maxOffset > 0 ? Math.round((scrollOffset / maxOffset) * 100) : 100;
-      line(color(`  ↑/↓/PgUp/PgDn scroll  (${pct}%)  lines ${scrollOffset + 1}-${Math.min(scrollOffset + viewportHeight, buffer.length)} of ${buffer.length}`, ANSI.dim));
+      rows.push(color(`  ↑/↓/PgUp/PgDn scroll  (${pct}%)  lines ${scrollOffset + 1}-${Math.min(scrollOffset + viewportHeight, buffer.length)} of ${buffer.length}`, ANSI.dim));
     } else {
-      line("");
+      rows.push("");
     }
-    line(color("  b/q/Enter — back", ANSI.dim));
+    rows.push(color("  b/q/Enter — back", ANSI.dim));
+    renderScreenRows(rows);
   };
 
   return new Promise((resolve) => {
@@ -1514,9 +1588,19 @@ function renderSummary(editors) {
 }
 
 function renderDashboard(editors) {
-  renderDetected(editors);
-  line("");
-  renderSummary(editors);
+  line("Editor Settings Sync");
+  table(["Editor", "User", "Ext", "CLI", "Settings", "Profiles"], editors.map((editor) => {
+    const snapshot = path.join(SNAPSHOTS, editor.id);
+    const profiles = supportsProfiles(editor) ? listDirs(path.join(snapshot, "user", "profiles")).length : 0;
+    return [
+      editor.name,
+      editor.signals.userDir ? "yes" : "no",
+      editor.signals.extensionsDir ? "yes" : "no",
+      editor.signals.cli ? "yes" : "no",
+      String(settingsKeys(snapshot).length),
+      String(profiles),
+    ];
+  }));
 }
 
 function collectSnapshots(editors) {
@@ -1728,9 +1812,11 @@ async function runInteractive() {
       collectSnapshots(editors);
     }
 
-    clear();
-    renderDashboard(editors);
-    if (editors.length < 2) return;
+    if (editors.length < 2) {
+      clear();
+      renderDashboard(editors);
+      return;
+    }
 
     while (true) {
       const action = await selectMenu("Actions", [
