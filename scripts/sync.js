@@ -515,6 +515,99 @@ function readExtensionMap(snapshot) {
   return map;
 }
 
+function extensionEntryId(entry) {
+  const id = entry && entry.identifier && entry.identifier.id;
+  return id ? id.toLowerCase() : "";
+}
+
+function extensionEntries(filePath) {
+  const data = readJson(filePath);
+  return Array.isArray(data) ? data : [];
+}
+
+function targetExtensionIdsFor(sourceExtensionId, targetEditorId) {
+  const id = sourceExtensionId.toLowerCase();
+  const ids = new Set([id, extensionInstallId(id, targetEditorId)]);
+  const alias = extensionAliasCounterpart(id, targetEditorId);
+  if (alias) ids.add(alias);
+  return ids;
+}
+
+function applicationScopedPlan(source, target) {
+  const sourceEntries = extensionEntries(path.join(SNAPSHOTS, source.id, "extensions", "extensions.json"));
+  const targetEntries = extensionEntries(path.join(target.extensionsDir, "extensions.json"));
+  const targetById = new Map(targetEntries.map((entry) => [extensionEntryId(entry), entry]).filter(([id]) => id));
+  const ids = [];
+  const missing = [];
+
+  for (const sourceEntry of sourceEntries) {
+    if (!sourceEntry || !sourceEntry.metadata || sourceEntry.metadata.isApplicationScoped !== true) continue;
+    const sourceId = extensionEntryId(sourceEntry);
+    if (!sourceId) continue;
+
+    const targetEntry = [...targetExtensionIdsFor(sourceId, target.id)]
+      .map((id) => targetById.get(id))
+      .find(Boolean);
+    if (!targetEntry) {
+      missing.push(sourceId);
+      continue;
+    }
+    if (!targetEntry.metadata || targetEntry.metadata.isApplicationScoped !== true) {
+      ids.push(extensionEntryId(targetEntry));
+    }
+  }
+
+  return { ids: [...new Set(ids)].sort((a, b) => a.localeCompare(b)), missing };
+}
+
+function syncApplicationScopedExtensions(source, target, opts = {}) {
+  const sourceEntries = extensionEntries(path.join(SNAPSHOTS, source.id, "extensions", "extensions.json"));
+  const targetFile = path.join(target.extensionsDir, "extensions.json");
+  const targetEntries = extensionEntries(targetFile);
+  if (!sourceEntries.length || !targetEntries.length) {
+    return { updated: 0, missing: [], backup: "" };
+  }
+
+  const targetById = new Map(targetEntries.map((entry) => [extensionEntryId(entry), entry]).filter(([id]) => id));
+  const missing = [];
+  const updatedIds = [];
+
+  for (const sourceEntry of sourceEntries) {
+    if (!sourceEntry || !sourceEntry.metadata || sourceEntry.metadata.isApplicationScoped !== true) continue;
+    const sourceId = extensionEntryId(sourceEntry);
+    if (!sourceId) continue;
+
+    const targetEntry = [...targetExtensionIdsFor(sourceId, target.id)]
+      .map((id) => targetById.get(id))
+      .find(Boolean);
+    if (!targetEntry) {
+      missing.push(sourceId);
+      continue;
+    }
+
+    if (!targetEntry.metadata) targetEntry.metadata = {};
+    if (targetEntry.metadata.isApplicationScoped !== true) {
+      targetEntry.metadata.isApplicationScoped = true;
+      updatedIds.push(extensionEntryId(targetEntry));
+    }
+  }
+
+  if (!updatedIds.length) {
+    return { updated: 0, missing, backup: "" };
+  }
+
+  const backupDir = opts.backupDir || path.join(BACKUPS, `${target.id}-extensions-${stamp()}`);
+  ensureDir(path.join(backupDir, "extensions"));
+  copyRecursive(targetFile, path.join(backupDir, "extensions", "extensions.json"));
+  fs.writeFileSync(targetFile, `${JSON.stringify(targetEntries, null, 2)}\n`);
+
+  return {
+    updated: updatedIds.length,
+    missing,
+    backup: backupDir,
+  };
+}
+
 function profileExtensionIds(profileDir) {
   return [...profileExtensionMap(profileDir).keys()].sort((a, b) => a.localeCompare(b));
 }
@@ -1686,12 +1779,13 @@ async function runInteractive() {
         const target = await chooseEditor(editors.filter((e) => e.id !== source.id), "Target", editors);
         if (!target) continue;
         const analysis = analyzePair(source, target);
-        const confirmed = await selectMenu(`Copy settings/snippets/profiles/MCP ${source.id} -> ${target.id}?`, [
+        const syncLabel = `Copy settings/snippets/profiles/MCP and all-profile extension flags ${source.id} -> ${target.id}?`;
+        const confirmed = await selectMenu(syncLabel, [
           { key: "y", label: "Yes", value: "yes" },
           { key: "n", label: "No", value: "no" },
         ], {
           defaultIndex: 1,
-          fallback: `Copy settings/snippets/profiles/MCP ${source.id} -> ${target.id}? [y/N] `,
+          fallback: `${syncLabel} [y/N] `,
           renderFrame: () => renderPair(source, target, analysis),
         });
         if (confirmed !== "yes") continue;
@@ -1700,13 +1794,18 @@ async function runInteractive() {
           itemsToCopy.push("profiles");
         }
         const backup = backupAndCopy(source, target, itemsToCopy);
-        await pauseScreen(() => box("Sync Complete", [`Backup: ${backup}`]), "Continue");
+        const appScopeResult = syncApplicationScopedExtensions(source, target, { backupDir: backup });
+        await pauseScreen(() => box("Sync Complete", [
+          `Backup: ${backup}`,
+          `All-profile extension flags updated: ${appScopeResult.updated}`,
+        ]), "Continue");
       } else if (action === "extensions") {
         const source = await chooseEditor(editors.filter((e) => e.id === "vscode" || e.id === "cursor"), "Extension source", editors);
         if (!source) continue;
         const target = await chooseEditor(editors.filter((e) => e.id !== source.id), "Install target", editors);
         if (!target) continue;
         const analysis = analyzePair(source, target);
+        const appScopePlan = applicationScopedPlan(source, target);
 
         const mode = await selectMenu("Choose extension sync mode", [
           { key: "1", label: "Install missing only", value: "missing" },
@@ -1794,6 +1893,7 @@ async function runInteractive() {
             `Planned actions: ${tasks.length}`,
             `  - Install/update: ${installs.length}`,
             `  - Uninstall: ${uninstalls.length}`,
+            `All-profile flags to update: ${appScopePlan.ids.length}`,
             `Replaced (alias): ${aliasedCount}`,
             `Ignored: ${ignoredCount}`,
             `Target CLI: ${target.cliPath || "not found"}`,
@@ -1808,6 +1908,23 @@ async function runInteractive() {
         };
 
         if (!tasks.length) {
+          if (appScopePlan.ids.length) {
+            const confirmed = await selectMenu(`Apply ${appScopePlan.ids.length} all-profile extension flags in ${target.id}?`, [
+              { key: "y", label: "Yes", value: "yes" },
+              { key: "n", label: "No", value: "no" },
+            ], {
+              defaultIndex: 0,
+              fallback: `Apply all-profile extension flags? [Y/n] `,
+              renderFrame: renderInstall,
+            });
+            if (confirmed !== "yes") continue;
+            const appScopeResult = syncApplicationScopedExtensions(source, target);
+            await pauseScreen(() => box("Extension Sync", [
+              `All-profile extension flags updated: ${appScopeResult.updated}`,
+              appScopeResult.backup ? `Backup: ${appScopeResult.backup}` : "No backup needed.",
+            ]), "Continue");
+            continue;
+          }
           await pauseScreen(() => {
             box("Extension Sync", [
               `Mode: ${modeLabel(mode)}`,
@@ -1831,10 +1948,12 @@ async function runInteractive() {
         line("Starting extension sync...");
         line("");
         const result = await syncExtensions(source, target, tasks);
+        const appScopeResult = syncApplicationScopedExtensions(source, target);
         line("");
         await pauseScreen(() => box("Sync Complete", [
           `Succeeded: ${result.ok}/${result.attempted}`,
           `Failed: ${result.failed.length}`,
+          `All-profile extension flags updated: ${appScopeResult.updated}`,
           result.failed.length ? "Failure details were saved to logs/" : "No failures."
         ]), "Continue");
       }

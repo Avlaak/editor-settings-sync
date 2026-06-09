@@ -104,6 +104,9 @@ VS Code ↔ Cursor ↔ Devin aliases (shown as `replaced by ...` with both versi
 
 When installing aliases on Cursor, the wizard uses the VS Code extension ID and Cursor maps it to its replacement.
 
+For profile-aware editors, extension sync also preserves VS Code's `all profiles` extension flag by copying the
+`isApplicationScoped` metadata into the target extension registry.
+
 Built-in editor-native ignore list:
 
 - Visual Studio Code: `ms-vscode.cpp-devtools`, `ms-dotnettools.csdevkit`, `ms-dotnettools.csharp`
