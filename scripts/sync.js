@@ -14,6 +14,7 @@ const BACKUPS = path.join(ROOT, "backups");
 const VSIX_CACHE = path.join(ROOT, "vsix_cache");
 const SAFE_USER_ITEMS = ["settings.json", "keybindings.json", "extensions.json", "mcp.json", "chatLanguageModels.json", "snippets"];
 const PROFILE_USER_ITEMS = SAFE_USER_ITEMS.filter((item) => item !== "extensions.json");
+const REQUIRED_PROFILE_DIRS = ["globalStorage"];
 const ANSI = {
   clearLine: "\x1b[2K",
   clearScreen: "\x1b[2J\x1b[H",
@@ -301,6 +302,7 @@ function copyProfiles(src, dst, { includeExtensions = false } = {}) {
     if (!isDir(profileDir)) continue;
     const profileOut = path.join(dst, profileName);
     ensureDir(profileOut);
+    for (const dir of REQUIRED_PROFILE_DIRS) ensureDir(path.join(profileOut, dir));
     for (const item of items) copyIfExists(path.join(profileDir, item), path.join(profileOut, item));
 
     const agentsDir = path.join(profileDir, "agents");
