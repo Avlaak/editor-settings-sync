@@ -1112,8 +1112,19 @@ async function syncExtensions(source, target, tasks) {
   return { attempted: tasks.length, ok, failed };
 }
 
+const ANSI_SGR_PATTERN = /\x1b\[[0-9;]*m/g;
+
+function stripAnsi(text) {
+  return String(text).replace(ANSI_SGR_PATTERN, "");
+}
+
+function leadingAnsiCodes(text) {
+  const match = String(text).match(/^(\x1b\[[0-9;]*m)+/);
+  return match ? match[0] : "";
+}
+
 function visibleLength(text) {
-  return String(text).replace(/\x1b\[[0-9;]*m/g, "").length;
+  return stripAnsi(text).length;
 }
 
 function color(text, ansi) {
@@ -1131,24 +1142,30 @@ function terminalHeight() {
 function truncateText(text, maxWidth) {
   const value = String(text);
   if (visibleLength(value) <= maxWidth) return value;
-  if (maxWidth <= 1) return "…";
-  return `${value.slice(0, Math.max(0, maxWidth - 1))}…`;
+  const prefix = leadingAnsiCodes(value);
+  const plain = stripAnsi(value);
+  if (maxWidth <= 1) return `${prefix}…${prefix ? ANSI.reset : ""}`;
+  return `${prefix}${plain.slice(0, Math.max(0, maxWidth - 1))}…${prefix ? ANSI.reset : ""}`;
 }
 
 function wrapText(text, maxWidth) {
   const value = String(text);
   if (maxWidth <= 0) return [""];
+
+  const prefix = leadingAnsiCodes(value);
+  const close = prefix ? ANSI.reset : "";
   const lines = [];
-  for (const rawLine of value.split(/\r?\n/)) {
+
+  for (const rawLine of stripAnsi(value).split(/\r?\n/)) {
     let lineValue = rawLine;
-    while (visibleLength(lineValue) > maxWidth) {
+    while (lineValue.length > maxWidth) {
       let cut = Math.min(lineValue.length, maxWidth);
       const space = lineValue.slice(0, cut + 1).lastIndexOf(" ");
       if (space > Math.floor(maxWidth * 0.55)) cut = space;
-      lines.push(lineValue.slice(0, cut).trimEnd());
+      lines.push(`${prefix}${lineValue.slice(0, cut).trimEnd()}${close}`);
       lineValue = lineValue.slice(cut).trimStart();
     }
-    lines.push(lineValue);
+    lines.push(lineValue ? `${prefix}${lineValue}${close}` : "");
   }
   return lines.length ? lines : [""];
 }
