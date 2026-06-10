@@ -54,6 +54,7 @@ macOS / Linux:
 ./sync.sh --collect
 ./sync.sh --analyze vscode cursor
 ./sync.sh --analyze vscode devin
+./sync.sh --prune-orphan-profiles cursor --yes
 ```
 
 Windows:
@@ -63,6 +64,7 @@ sync.bat --detect
 sync.bat --collect
 sync.bat --analyze vscode cursor
 sync.bat --analyze vscode devin
+sync.bat --prune-orphan-profiles cursor --yes
 ```
 
 `--collect` creates local runtime snapshots under `snapshots/`. These files are ignored by git because they may contain local paths and private settings.
@@ -116,6 +118,16 @@ Extensions view instead.
 Cross-editor profile sync matches profiles **by name**, not by internal profile folder id. VS Code and Cursor
 assign different ids to the same named profile; copying profile folders blindly creates orphan directories under
 `User/profiles/`. The dashboard shows them as `+N orphan`.
+
+Remove orphan profile folders with the interactive menu action **Remove orphan profile folders** or:
+
+```sh
+./sync.sh --prune-orphan-profiles cursor
+./sync.sh --prune-orphan-profiles cursor --yes
+```
+
+Omit the editor id to scan all profile-aware editors. The command only deletes profile directories that are absent
+from `globalStorage/storage.json`, backs them up under `backups/`, and should be run with the editor closed.
 
 Built-in editor-native ignore list:
 

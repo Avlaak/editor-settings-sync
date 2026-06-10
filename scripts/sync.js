@@ -415,6 +415,67 @@ function countOrphanProfileDirs(userDir) {
   return listOrphanProfileDirs({ userDir, supportsProfiles: true }).length;
 }
 
+function orphanProfilePlan(editor) {
+  const orphans = listOrphanProfileDirs(editor);
+  const registered = registeredProfileLocations(editor.userDir);
+  return {
+    editor,
+    orphans,
+    registeredCount: registered.size,
+    profilesDir: path.join(editor.userDir, "profiles"),
+  };
+}
+
+function pruneOrphanProfiles(editor) {
+  const plan = orphanProfilePlan(editor);
+  if (!supportsProfiles(editor)) {
+    return { removed: [], backup: "", reason: "profiles_not_supported" };
+  }
+  if (!plan.registeredCount) {
+    return { removed: [], backup: "", reason: "no_registered_profiles" };
+  }
+  if (!plan.orphans.length) {
+    return { removed: [], backup: "", reason: "none_found" };
+  }
+
+  const backupDir = path.join(BACKUPS, `${editor.id}-orphan-profiles-${stamp()}`);
+  ensureDir(backupDir);
+  for (const location of plan.orphans) {
+    const src = path.join(plan.profilesDir, location);
+    copyRecursive(src, path.join(backupDir, location));
+    rmrf(src);
+  }
+
+  return { removed: plan.orphans, backup: backupDir, reason: "removed" };
+}
+
+function bufferOrphanProfilePlan(editor) {
+  const plan = orphanProfilePlan(editor);
+  const buf = [
+    `Editor: ${editor.name} (${editor.id})`,
+    `Profiles dir: ${plan.profilesDir}`,
+    `Registered profiles: ${plan.registeredCount}`,
+    `Orphan profile dirs: ${plan.orphans.length}`,
+  ];
+  if (!supportsProfiles(editor)) {
+    buf.push("This editor does not use VS Code-style profiles.");
+    return buf;
+  }
+  if (!plan.registeredCount) {
+    buf.push("No registered profiles found in storage.json. Nothing was removed.");
+    return buf;
+  }
+  if (!plan.orphans.length) {
+    buf.push("No orphan profile directories found.");
+    return buf;
+  }
+  for (const location of plan.orphans) {
+    buf.push(`  - ${location}`);
+  }
+  buf.push("Close the editor before removing orphan profile folders.");
+  return buf;
+}
+
 function runEditorCli(editor, args, stdoutFile, stderrFile) {
   if (!editor.cliPath) return;
   const result = spawnEditorCli(editor.cliPath, args);
@@ -2028,6 +2089,7 @@ async function runInteractive() {
         { key: "3", label: "Analyze an editor pair", value: "analyze" },
         { key: "4", label: "Sync settings/profiles", value: "sync" },
         { key: "5", label: "Sync extensions via CLI", value: "extensions" },
+        { key: "6", label: "Remove orphan profile folders", value: "prune_orphans" },
         { key: "q", label: "Quit", value: "q" },
       ], {
         fallback: "Choice: ",
@@ -2230,6 +2292,34 @@ async function runInteractive() {
           ...applicationScopedSummaryLines(appScopePlan),
           result.failed.length ? "Failure details were saved to logs/" : "No failures.",
         ]), "Continue");
+      } else if (action === "prune_orphans") {
+        const candidates = editors.filter((editor) => supportsProfiles(editor));
+        if (!candidates.length) {
+          await pauseScreen(() => box("Orphan Profiles", ["No profile-aware editors were found."]), "Continue");
+          continue;
+        }
+        const editor = await chooseEditor(candidates, "Remove orphan profiles for", editors);
+        if (!editor) continue;
+        const plan = orphanProfilePlan(editor);
+        if (!plan.orphans.length) {
+          await pauseScreen(() => box("Orphan Profiles", bufferOrphanProfilePlan(editor)), "Continue");
+          continue;
+        }
+        const confirmed = await selectMenu(`Remove ${plan.orphans.length} orphan profile folders from ${editor.id}?`, [
+          { key: "y", label: "Yes", value: "yes" },
+          { key: "n", label: "No", value: "no" },
+        ], {
+          defaultIndex: 1,
+          fallback: `Remove orphan profile folders? [y/N] `,
+          renderFrame: () => box("Orphan Profiles", bufferOrphanProfilePlan(editor)),
+        });
+        if (confirmed !== "yes") continue;
+        const result = pruneOrphanProfiles(editor);
+        await pauseScreen(() => box("Orphan Profiles Removed", [
+          `Removed: ${result.removed.length}`,
+          ...result.removed.map((location) => `  - ${location}`),
+          result.backup ? `Backup: ${result.backup}` : "",
+        ].filter(Boolean)), "Continue");
       }
     }
   } finally {
@@ -2246,7 +2336,53 @@ function printHelp() {
   line("  ./sync.sh --detect             # print detected editors");
   line("  ./sync.sh --collect            # collect all detected editors");
   line("  ./sync.sh --analyze A B");
+  line("  ./sync.sh --prune-orphan-profiles [editor] [-y]");
   line("  node scripts/sync.js ...       # direct launch on any OS");
+}
+
+function runPruneOrphanProfiles(editors, args) {
+  const pruneAt = args.indexOf("--prune-orphan-profiles");
+  const editorArg = args[pruneAt + 1];
+  const hasEditorArg = editorArg && !editorArg.startsWith("-");
+  const targets = hasEditorArg
+    ? [findEditor(editors, editorArg)].filter(Boolean)
+    : editors.filter((editor) => supportsProfiles(editor));
+
+  if (hasEditorArg && !targets.length) {
+    line("Unknown editor id. Run --detect first.");
+    process.exitCode = 2;
+    return;
+  }
+  if (!targets.length) {
+    line("No profile-aware editors were found.");
+    return;
+  }
+
+  const autoConfirm = args.includes("--yes") || args.includes("-y");
+  let removedTotal = 0;
+
+  for (const editor of targets) {
+    const plan = orphanProfilePlan(editor);
+    for (const row of bufferOrphanProfilePlan(editor)) line(row);
+    if (!plan.orphans.length) {
+      line("");
+      continue;
+    }
+    if (!autoConfirm) {
+      line("Re-run with --yes to remove these orphan profile folders.");
+      process.exitCode = 2;
+      return;
+    }
+    const result = pruneOrphanProfiles(editor);
+    removedTotal += result.removed.length;
+    line(`Removed: ${result.removed.length}`);
+    if (result.backup) line(`Backup: ${result.backup}`);
+    line("");
+  }
+
+  if (!removedTotal) {
+    line("No orphan profile folders were removed.");
+  }
 }
 
 function runCli() {
@@ -2272,6 +2408,9 @@ function runCli() {
       return;
     }
     return renderPair(source, target, analyzePair(source, target));
+  }
+  if (args.includes("--prune-orphan-profiles")) {
+    return runPruneOrphanProfiles(editors, args);
   }
   return runInteractive();
 }
