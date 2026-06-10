@@ -119,6 +119,16 @@ Cross-editor profile sync matches profiles **by name**, not by internal profile 
 assign different ids to the same named profile; copying profile folders blindly creates orphan directories under
 `User/profiles/`. The dashboard shows them as `+N orphan`.
 
+Settings/profile sync copies only `settings.json`, `keybindings.json`, snippets, MCP, and related profile files.
+It never overwrites per-profile `extensions.json`. Profile folders are merged in place instead of being deleted
+first.
+
+VS Code may show one more registered profile than Cursor when it has the built-in **Agents** profile
+(`builtin/agents`). The dashboard counts user profiles separately and shows built-in profiles as `(+N builtin)`.
+
+Close the editor before syncing settings or extensions. Installing extensions via CLI while the editor is open can
+still corrupt per-profile extension state.
+
 Remove orphan profile folders with the interactive menu action **Remove orphan profile folders** or:
 
 ```sh

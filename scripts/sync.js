@@ -302,12 +302,16 @@ function supportsProfiles(editor) {
   return editor.supportsProfiles !== false;
 }
 
+function isBuiltinProfileLocation(location) {
+  return location === "builtin" || (typeof location === "string" && location.startsWith("builtin/"));
+}
+
 function readProfileNamesFromUserDir(userDir) {
   const storageJson = readJson(path.join(userDir, "globalStorage", "storage.json"));
   const map = new Map();
   if (!storageJson) return map;
   for (const profile of storageJson.userDataProfiles || []) {
-    if (profile.location && profile.name) {
+    if (profile.location && profile.name && !isBuiltinProfileLocation(profile.location)) {
       map.set(profile.location, profile.name);
     }
   }
@@ -321,9 +325,44 @@ function registeredProfileLocations(snapshotOrUserDir) {
   const locations = new Set();
   if (!storageJson) return locations;
   for (const profile of storageJson.userDataProfiles || []) {
-    if (profile.location) locations.add(profile.location);
+    if (profile.location && !isBuiltinProfileLocation(profile.location)) {
+      locations.add(profile.location);
+    }
   }
   return locations;
+}
+
+function registeredBuiltinProfileCount(userDir) {
+  const storageJson = readJson(path.join(userDir, "globalStorage", "storage.json"));
+  if (!storageJson) return 0;
+  return (storageJson.userDataProfiles || []).filter((profile) => (
+    profile.location && isBuiltinProfileLocation(profile.location)
+  )).length;
+}
+
+function listProfilesMissingExtensions(userDir) {
+  const profilesDir = path.join(userDir, "profiles");
+  const registered = registeredProfileLocations(userDir);
+  if (!isDir(profilesDir) || !registered.size) return [];
+  const missing = [];
+  for (const location of [...registered].sort((a, b) => a.localeCompare(b))) {
+    const extFile = path.join(profilesDir, location, "extensions.json");
+    if (!exists(extFile)) missing.push(location);
+  }
+  return missing;
+}
+
+function profileHealthSummaryLines(editor) {
+  if (!supportsProfiles(editor)) return [];
+  const missing = listProfilesMissingExtensions(editor.userDir);
+  if (!missing.length) return [];
+  const names = readProfileNamesFromUserDir(editor.userDir);
+  return [
+    `Warning: ${missing.length} profile(s) have no extensions.json in ${editor.id}.`,
+    ...missing.map((location) => `  - ${names.get(location) || location}`),
+    "Per-profile extensions may appear reset until restored from backups/.",
+    "Close the editor before syncing settings or extensions.",
+  ];
 }
 
 function listProfileDirs(profilesDir, registeredLocations = null) {
@@ -373,7 +412,7 @@ function syncProfilesByName(sourceProfilesDir, targetProfilesDir, sourceSnapshot
   for (const profile of (targetStorage && targetStorage.userDataProfiles) || []) {
     const targetLocation = profile.location;
     const profileName = profile.name;
-    if (!targetLocation || !profileName || targetLocation === "builtin") continue;
+    if (!targetLocation || !profileName || isBuiltinProfileLocation(targetLocation)) continue;
 
     const sourceLocation = sourceByName.get(profileName);
     if (!sourceLocation) {
@@ -1007,7 +1046,7 @@ function readProfileNames(snapshot) {
   const storageJson = readJson(path.join(snapshot, "user", "globalStorage", "storage.json"));
   if (!storageJson) return map;
   for (const profile of storageJson.userDataProfiles || []) {
-    if (profile.location && profile.name) {
+    if (profile.location && profile.name && !isBuiltinProfileLocation(profile.location)) {
       map.set(profile.location, profile.name);
     }
   }
@@ -1246,17 +1285,18 @@ function backupAndCopy(source, target, items) {
     const sourceItem = path.join(sourceUser, item);
     if (!exists(sourceItem)) continue;
     const targetItem = path.join(target.userDir, item);
-    rmrf(targetItem);
     if (item === "profiles") {
+      ensureDir(targetItem);
       if (source.id === target.id) {
         const registered = registeredProfileLocations(target.userDir);
         copyProfiles(sourceItem, targetItem, { registeredLocations: registered });
       } else {
         syncProfilesByName(sourceItem, targetItem, path.join(SNAPSHOTS, source.id), target.userDir);
       }
-    } else {
-      copyRecursive(sourceItem, targetItem);
+      continue;
     }
+    rmrf(targetItem);
+    copyRecursive(sourceItem, targetItem);
   }
   return backupDir;
 }
@@ -1838,9 +1878,12 @@ function snapshotProfileCount(snapshot, editor) {
 function liveProfileLabel(editor) {
   if (!supportsProfiles(editor)) return "0";
   const registered = registeredProfileLocations(editor.userDir).size;
+  const builtin = registeredBuiltinProfileCount(editor.userDir);
   const orphans = countOrphanProfileDirs(editor.userDir);
-  if (!orphans) return String(registered);
-  return `${registered} (+${orphans} orphan)`;
+  let label = String(registered);
+  if (builtin) label += ` (+${builtin} builtin)`;
+  if (orphans) label += ` (+${orphans} orphan)`;
+  return label;
 }
 
 function renderSummary(editors) {
@@ -2148,6 +2191,8 @@ async function runInteractive() {
         const appScopePlan = applicationScopedPlan(source, target);
         await pauseScreen(() => box("Sync Complete", [
           `Backup: ${backup}`,
+          "Profile settings were merged in place; extensions.json in each profile was left untouched.",
+          ...profileHealthSummaryLines(target),
           ...applicationScopedSummaryLines(appScopePlan),
         ]), "Continue");
       } else if (action === "extensions") {
@@ -2281,8 +2326,14 @@ async function runInteractive() {
         });
         if (confirmed !== "yes") continue;
 
+        const profileHealth = profileHealthSummaryLines(target);
+        if (profileHealth.length) {
+          await pauseScreen(() => box("Profile Extension Warning", profileHealth), "Continue anyway");
+        }
+
         clear();
         line("Starting extension sync...");
+        line("Close the target editor first to avoid extension state corruption.");
         line("");
         const result = await syncExtensions(source, target, tasks);
         line("");
