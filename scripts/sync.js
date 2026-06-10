@@ -45,6 +45,13 @@ const EXTENSION_ALIASES = [
 
 const ALIAS_EDITORS = new Set(["vscode", "cursor", "devin"]);
 
+const EXTENSION_PATCHES = [
+  {
+    requires: "ms-vscode.cpptools",
+    patch: "embedd-team.cpptools-proxy-patcher",
+  },
+];
+
 const EXTENSION_ALIAS_BY_ID = new Map();
 for (const pair of EXTENSION_ALIASES) {
   for (const extId of Object.values(pair)) {
@@ -116,6 +123,8 @@ const EDITORS = [
     },
   },
 ];
+
+const FORK_EDITOR_IDS = new Set(EDITORS.map((editor) => editor.id).filter((id) => id !== "vscode"));
 
 const argv = new Set(process.argv.slice(2));
 const nonInteractive = argv.has("--yes") || argv.has("-y");
@@ -649,6 +658,41 @@ function isIgnoredExtension(editorId, extensionId) {
   return Boolean(EDITOR_EXTENSION_IGNORE[editorId] && EDITOR_EXTENSION_IGNORE[editorId].has(extensionId.toLowerCase()));
 }
 
+function isForkEditor(editorId) {
+  return FORK_EDITOR_IDS.has(editorId);
+}
+
+function appendExtensionPatchRows(rows, target, sourceScope, sourceExts, targetExts) {
+  if (!isForkEditor(target.id)) return;
+
+  for (const rule of EXTENSION_PATCHES) {
+    const requiresId = rule.requires.toLowerCase();
+    const patchId = rule.patch.toLowerCase();
+    const requiresPresent = targetExts.has(requiresId) || sourceExts.has(requiresId);
+    if (!requiresPresent || targetExts.has(patchId)) continue;
+    if (rows.some((row) => row.scope === sourceScope.name && row.id.toLowerCase() === patchId)) continue;
+
+    rows.push({
+      scope: sourceScope.name,
+      scopeDisplayName: sourceScope.displayName || sourceScope.name,
+      id: patchId,
+      sourceVersion: undefined,
+      targetVersion: undefined,
+      patchFor: requiresId,
+      status: "missing",
+    });
+  }
+}
+
+function patchInstallBlocked(row, analysis, mode) {
+  if (!row.patchFor || mode !== "full_clean") return false;
+  return analysis.extensionRows.some((candidate) => (
+    candidate.scope === row.scope
+    && candidate.id.toLowerCase() === row.patchFor.toLowerCase()
+    && candidate.status === "extra"
+  ));
+}
+
 function editorsUseExtensionAliases(sourceEditorId, targetEditorId) {
   return ALIAS_EDITORS.has(sourceEditorId) && ALIAS_EDITORS.has(targetEditorId);
 }
@@ -772,6 +816,8 @@ function buildUnifiedRows(source, target, sourceScopes, targetScopes) {
         status: "extra",
       });
     }
+
+    appendExtensionPatchRows(rows, target, sourceScope, sourceExts, targetExts);
   }
 
   return rows;
@@ -1773,7 +1819,9 @@ function bufferExtensionRows(rows, sourceId, targetId) {
 
 function statusLabel(row) {
   const status = typeof row === "string" ? row : row.status;
-  if (status === "missing") return color("missing", ANSI.red);
+  if (status === "missing") {
+    return color(row.patchFor ? `patch for ${row.patchFor}` : "missing", ANSI.red);
+  }
   if (status === "extra") return color("extra", ANSI.dim);
   if (status === "older") return color("older", ANSI.orange);
   if (status === "different") return color("different", ANSI.magenta);
@@ -1926,6 +1974,7 @@ async function runInteractive() {
         const tasks = [];
         for (const row of analysis.extensionRows) {
           if (row.status === "ignored" || row.status === "aliased") continue;
+          if (patchInstallBlocked(row, analysis, mode)) continue;
 
           if (mode === "missing") {
             if (row.status === "missing") {
@@ -1985,16 +2034,17 @@ async function runInteractive() {
           return m;
         };
 
-        const installs = tasks.filter((t) => t.action === "install");
         const uninstalls = tasks.filter((t) => t.action === "uninstall");
+
         const ignoredCount = analysis.extensionRows.filter((row) => row.status === "ignored").length;
         const aliasedCount = analysis.extensionRows.filter((row) => row.status === "aliased").length;
 
         const renderInstall = () => {
+          const installsAfterPatches = tasks.filter((t) => t.action === "install");
           box("Extension Sync", [
             `Mode: ${modeLabel(mode)}`,
             `Planned actions: ${tasks.length}`,
-            `  - Install/update: ${installs.length}`,
+            `  - Install/update: ${installsAfterPatches.length}`,
             `  - Uninstall: ${uninstalls.length}`,
             `All-profile flags to update: ${appScopePlan.ids.length}`,
             `Replaced (alias): ${aliasedCount}`,
