@@ -108,8 +108,14 @@ Fork-only extension patches (shown in red as `patch for ...`; installed with mis
 
 - `embedd-team.cpptools-proxy-patcher` when `ms-vscode.cpptools` is present
 
-For profile-aware editors, extension sync also preserves VS Code's `all profiles` extension flag by copying the
-`isApplicationScoped` metadata into the target extension registry.
+For profile-aware editors, the wizard only **reports** differences in VS Code's `Apply Extension to all Profiles`
+flag (`isApplicationScoped`). It does not write `extensions.json` automatically: doing that while the editor is
+open can leave only global extensions visible and wipe per-profile extension lists. Set the flag manually in the
+Extensions view instead.
+
+Cross-editor profile sync matches profiles **by name**, not by internal profile folder id. VS Code and Cursor
+assign different ids to the same named profile; copying profile folders blindly creates orphan directories under
+`User/profiles/`. The dashboard shows them as `+N orphan`.
 
 Built-in editor-native ignore list:
 

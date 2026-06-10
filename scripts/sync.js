@@ -302,29 +302,117 @@ function supportsProfiles(editor) {
   return editor.supportsProfiles !== false;
 }
 
-function copyProfiles(src, dst, { includeExtensions = false } = {}) {
+function readProfileNamesFromUserDir(userDir) {
+  const storageJson = readJson(path.join(userDir, "globalStorage", "storage.json"));
+  const map = new Map();
+  if (!storageJson) return map;
+  for (const profile of storageJson.userDataProfiles || []) {
+    if (profile.location && profile.name) {
+      map.set(profile.location, profile.name);
+    }
+  }
+  return map;
+}
+
+function registeredProfileLocations(snapshotOrUserDir) {
+  const storagePath = path.join(snapshotOrUserDir, "user", "globalStorage", "storage.json");
+  const userStoragePath = path.join(snapshotOrUserDir, "globalStorage", "storage.json");
+  const storageJson = exists(storagePath) ? readJson(storagePath) : readJson(userStoragePath);
+  const locations = new Set();
+  if (!storageJson) return locations;
+  for (const profile of storageJson.userDataProfiles || []) {
+    if (profile.location) locations.add(profile.location);
+  }
+  return locations;
+}
+
+function listProfileDirs(profilesDir, registeredLocations = null) {
+  if (!isDir(profilesDir)) return [];
+  return fs.readdirSync(profilesDir)
+    .filter((name) => name !== "builtin")
+    .filter((name) => isDir(path.join(profilesDir, name)))
+    .filter((name) => !registeredLocations || registeredLocations.size === 0 || registeredLocations.has(name))
+    .sort((a, b) => a.localeCompare(b));
+}
+
+function copyProfileContents(srcProfileDir, dstProfileDir, items) {
+  ensureDir(dstProfileDir);
+  for (const dir of REQUIRED_PROFILE_DIRS) ensureDir(path.join(dstProfileDir, dir));
+  for (const item of items) copyIfExists(path.join(srcProfileDir, item), path.join(dstProfileDir, item));
+
+  const agentsDir = path.join(srcProfileDir, "agents");
+  if (!isDir(agentsDir)) return;
+  for (const agentName of fs.readdirSync(agentsDir)) {
+    const agentDir = path.join(agentsDir, agentName);
+    if (!isDir(agentDir)) continue;
+    const agentOut = path.join(dstProfileDir, "agents", agentName);
+    ensureDir(agentOut);
+    for (const item of items) copyIfExists(path.join(agentDir, item), path.join(agentOut, item));
+  }
+}
+
+function copyProfiles(src, dst, { includeExtensions = false, registeredLocations = null } = {}) {
   if (!isDir(src)) return;
   const items = includeExtensions ? SAFE_USER_ITEMS : PROFILE_USER_ITEMS;
   ensureDir(dst);
-  for (const profileName of fs.readdirSync(src)) {
-    if (profileName === "builtin") continue;
-    const profileDir = path.join(src, profileName);
-    if (!isDir(profileDir)) continue;
-    const profileOut = path.join(dst, profileName);
-    ensureDir(profileOut);
-    for (const dir of REQUIRED_PROFILE_DIRS) ensureDir(path.join(profileOut, dir));
-    for (const item of items) copyIfExists(path.join(profileDir, item), path.join(profileOut, item));
-
-    const agentsDir = path.join(profileDir, "agents");
-    if (!isDir(agentsDir)) continue;
-    for (const agentName of fs.readdirSync(agentsDir)) {
-      const agentDir = path.join(agentsDir, agentName);
-      if (!isDir(agentDir)) continue;
-      const agentOut = path.join(profileOut, "agents", agentName);
-      ensureDir(agentOut);
-      for (const item of items) copyIfExists(path.join(agentDir, item), path.join(agentOut, item));
-    }
+  for (const profileName of listProfileDirs(src, registeredLocations)) {
+    copyProfileContents(path.join(src, profileName), path.join(dst, profileName), items);
   }
+}
+
+function syncProfilesByName(sourceProfilesDir, targetProfilesDir, sourceSnapshotDir, targetUserDir) {
+  if (!isDir(sourceProfilesDir) || !isDir(targetUserDir)) return { copied: [], skipped: [] };
+
+  const sourceNames = readProfileNames(sourceSnapshotDir);
+  const sourceByName = new Map([...sourceNames.entries()].map(([location, name]) => [name, location]));
+  const targetStorage = readJson(path.join(targetUserDir, "globalStorage", "storage.json"));
+  const copied = [];
+  const skipped = [];
+
+  ensureDir(targetProfilesDir);
+  for (const profile of (targetStorage && targetStorage.userDataProfiles) || []) {
+    const targetLocation = profile.location;
+    const profileName = profile.name;
+    if (!targetLocation || !profileName || targetLocation === "builtin") continue;
+
+    const sourceLocation = sourceByName.get(profileName);
+    if (!sourceLocation) {
+      skipped.push(profileName);
+      continue;
+    }
+
+    const sourceProfileDir = path.join(sourceProfilesDir, sourceLocation);
+    if (!isDir(sourceProfileDir)) {
+      skipped.push(profileName);
+      continue;
+    }
+
+    copyProfileContents(sourceProfileDir, path.join(targetProfilesDir, targetLocation), PROFILE_USER_ITEMS);
+    copied.push(profileName);
+  }
+
+  return { copied, skipped };
+}
+
+function listOrphanProfileDirs(editor) {
+  if (!supportsProfiles(editor)) return [];
+  const profilesDir = path.join(editor.userDir, "profiles");
+  if (!isDir(profilesDir)) return [];
+  const registered = registeredProfileLocations(editor.userDir);
+  if (!registered.size) return [];
+  return fs.readdirSync(profilesDir)
+    .filter((name) => name !== "builtin")
+    .filter((name) => isDir(path.join(profilesDir, name)))
+    .filter((name) => !registered.has(name))
+    .sort((a, b) => a.localeCompare(b));
+}
+
+function countOrphanProfileDirs(userDir) {
+  const profilesDir = path.join(userDir, "profiles");
+  if (!isDir(profilesDir)) return 0;
+  const registered = registeredProfileLocations(userDir);
+  if (!registered.size) return 0;
+  return listOrphanProfileDirs({ userDir, supportsProfiles: true }).length;
 }
 
 function runEditorCli(editor, args, stdoutFile, stderrFile) {
@@ -355,7 +443,12 @@ function collectEditor(editor) {
       copyIfExists(path.join(editor.userDir, item), path.join(out, "user", item));
     }
     if (supportsProfiles(editor)) {
-      copyProfiles(path.join(editor.userDir, "profiles"), path.join(out, "user", "profiles"), { includeExtensions: true });
+      const registered = registeredProfileLocations(editor.userDir);
+      copyProfiles(
+        path.join(editor.userDir, "profiles"),
+        path.join(out, "user", "profiles"),
+        { includeExtensions: true, registeredLocations: registered },
+      );
       copyIfExists(path.join(editor.userDir, "globalStorage", "storage.json"), path.join(out, "user", "globalStorage", "storage.json"));
     }
   }
@@ -569,12 +662,21 @@ function applicationScopedPlan(source, target) {
   return { ids: [...new Set(ids)].sort((a, b) => a.localeCompare(b)), missing };
 }
 
+const APPLICATION_SCOPED_WARNING = [
+  "Writing extensions.json while the editor is open can reset profile extensions.",
+  "Set Apply to all Profiles manually in the Extensions view instead.",
+];
+
 function syncApplicationScopedExtensions(source, target, opts = {}) {
+  if (opts.dryRun) {
+    return applicationScopedPlan(source, target);
+  }
+
   const sourceEntries = extensionEntries(path.join(SNAPSHOTS, source.id, "extensions", "extensions.json"));
   const targetFile = path.join(target.extensionsDir, "extensions.json");
   const targetEntries = extensionEntries(targetFile);
   if (!sourceEntries.length || !targetEntries.length) {
-    return { updated: 0, missing: [], backup: "" };
+    return { updated: 0, missing: [], backup: "", ids: [] };
   }
 
   const targetById = new Map(targetEntries.map((entry) => [extensionEntryId(entry), entry]).filter(([id]) => id));
@@ -602,7 +704,7 @@ function syncApplicationScopedExtensions(source, target, opts = {}) {
   }
 
   if (!updatedIds.length) {
-    return { updated: 0, missing, backup: "" };
+    return { updated: 0, missing, backup: "", ids: [] };
   }
 
   const backupDir = opts.backupDir || path.join(BACKUPS, `${target.id}-extensions-${stamp()}`);
@@ -614,7 +716,21 @@ function syncApplicationScopedExtensions(source, target, opts = {}) {
     updated: updatedIds.length,
     missing,
     backup: backupDir,
+    ids: updatedIds,
   };
+}
+
+function applicationScopedSummaryLines(plan) {
+  if (!plan.ids.length && !plan.missing.length) return [];
+  const lines = [`All-profile flag differences: ${plan.ids.length}`];
+  if (plan.ids.length) {
+    lines.push(`  Would mark in target: ${plan.ids.join(", ")}`);
+  }
+  if (plan.missing.length) {
+    lines.push(`  Missing in target: ${plan.missing.join(", ")}`);
+  }
+  lines.push(...APPLICATION_SCOPED_WARNING);
+  return lines;
 }
 
 function profileExtensionIds(profileDir) {
@@ -824,11 +940,12 @@ function buildUnifiedRows(source, target, sourceScopes, targetScopes) {
 }
 
 function readProfileNames(snapshot) {
+  const map = readProfileNamesFromUserDir(path.join(snapshot, "user"));
+  if (map.size) return map;
+
   const storageJson = readJson(path.join(snapshot, "user", "globalStorage", "storage.json"));
-  const map = new Map();
   if (!storageJson) return map;
-  const profiles = storageJson.userDataProfiles || [];
-  for (const profile of profiles) {
+  for (const profile of storageJson.userDataProfiles || []) {
     if (profile.location && profile.name) {
       map.set(profile.location, profile.name);
     }
@@ -841,7 +958,8 @@ function readExtensionScopes(snapshot, editor) {
   const scopes = [{ name: "global", displayName: "Default", extensions: readExtensionMap(snapshot) }];
   if (!supportsProfiles(editor)) return scopes;
   const profilesDir = path.join(snapshot, "user", "profiles");
-  for (const profile of listDirs(profilesDir)) {
+  const registered = new Set(profileNames.keys());
+  for (const profile of listProfileDirs(profilesDir, registered)) {
     const displayName = profileNames.get(profile) || profile;
     scopes.push({
       name: `profile:${profile}`,
@@ -859,8 +977,12 @@ function analyzePair(source, target) {
   const targetExt = readExtensionIds(targetSnap);
   const sourceSettings = settingsKeys(sourceSnap);
   const targetSettings = settingsKeys(targetSnap);
-  const sourceProfiles = supportsProfiles(source) ? listDirs(path.join(sourceSnap, "user", "profiles")) : [];
-  const targetProfiles = supportsProfiles(target) ? listDirs(path.join(targetSnap, "user", "profiles")) : [];
+  const sourceProfiles = supportsProfiles(source)
+    ? listProfileDirs(path.join(sourceSnap, "user", "profiles"), new Set(readProfileNames(sourceSnap).keys()))
+    : [];
+  const targetProfiles = supportsProfiles(target)
+    ? listProfileDirs(path.join(targetSnap, "user", "profiles"), new Set(readProfileNames(targetSnap).keys()))
+    : [];
   let sourceScopes = readExtensionScopes(sourceSnap, source);
   let targetScopes = readExtensionScopes(targetSnap, target);
 
@@ -1065,7 +1187,12 @@ function backupAndCopy(source, target, items) {
     const targetItem = path.join(target.userDir, item);
     rmrf(targetItem);
     if (item === "profiles") {
-      copyProfiles(sourceItem, targetItem);
+      if (source.id === target.id) {
+        const registered = registeredProfileLocations(target.userDir);
+        copyProfiles(sourceItem, targetItem, { registeredLocations: registered });
+      } else {
+        syncProfilesByName(sourceItem, targetItem, path.join(SNAPSHOTS, source.id), target.userDir);
+      }
     } else {
       copyRecursive(sourceItem, targetItem);
     }
@@ -1095,7 +1222,6 @@ async function syncExtensions(source, target, tasks) {
     const prefix = `${indexStr} [Profile: ${profileLabel}] ${actionLabel} ${task.id}${versionLabel}... `;
     process.stdout.write(prefix);
 
-    // Prepare CLI args
     const baseArgs = [];
     if (task.profileDisplayName && task.profileDisplayName !== "Default") {
       baseArgs.push("--profile", task.profileDisplayName);
@@ -1642,11 +1768,24 @@ function renderDetected(editors) {
   ]));
 }
 
+function snapshotProfileCount(snapshot, editor) {
+  if (!supportsProfiles(editor)) return "0";
+  const registered = new Set(readProfileNames(snapshot).keys());
+  return String(listProfileDirs(path.join(snapshot, "user", "profiles"), registered).length);
+}
+
+function liveProfileLabel(editor) {
+  if (!supportsProfiles(editor)) return "0";
+  const registered = registeredProfileLocations(editor.userDir).size;
+  const orphans = countOrphanProfileDirs(editor.userDir);
+  if (!orphans) return String(registered);
+  return `${registered} (+${orphans} orphan)`;
+}
+
 function renderSummary(editors) {
   table(["Editor", "Settings", "Extensions", "Profiles"], editors.map((editor) => {
     const snapshot = path.join(SNAPSHOTS, editor.id);
-    const profiles = supportsProfiles(editor) ? listDirs(path.join(snapshot, "user", "profiles")).length : 0;
-    return [editor.name, String(settingsKeys(snapshot).length), String(readExtensionIds(snapshot).length), String(profiles)];
+    return [editor.name, String(settingsKeys(snapshot).length), String(readExtensionIds(snapshot).length), snapshotProfileCount(snapshot, editor)];
   }));
 }
 
@@ -1654,14 +1793,13 @@ function renderDashboard(editors) {
   line("Editor Settings Sync");
   table(["Editor", "User", "Ext", "CLI", "Settings", "Profiles"], editors.map((editor) => {
     const snapshot = path.join(SNAPSHOTS, editor.id);
-    const profiles = supportsProfiles(editor) ? listDirs(path.join(snapshot, "user", "profiles")).length : 0;
     return [
       editor.name,
       editor.signals.userDir ? "yes" : "no",
       editor.signals.extensionsDir ? "yes" : "no",
       editor.signals.cli ? "yes" : "no",
       String(settingsKeys(snapshot).length),
-      String(profiles),
+      liveProfileLabel(editor),
     ];
   }));
 }
@@ -1930,7 +2068,7 @@ async function runInteractive() {
         const target = await chooseEditor(editors.filter((e) => e.id !== source.id), "Target", editors);
         if (!target) continue;
         const analysis = analyzePair(source, target);
-        const syncLabel = `Copy settings/snippets/profiles/MCP and all-profile extension flags ${source.id} -> ${target.id}?`;
+        const syncLabel = `Copy settings/snippets/profiles/MCP ${source.id} -> ${target.id}?`;
         const confirmed = await selectMenu(syncLabel, [
           { key: "y", label: "Yes", value: "yes" },
           { key: "n", label: "No", value: "no" },
@@ -1945,10 +2083,10 @@ async function runInteractive() {
           itemsToCopy.push("profiles");
         }
         const backup = backupAndCopy(source, target, itemsToCopy);
-        const appScopeResult = syncApplicationScopedExtensions(source, target, { backupDir: backup });
+        const appScopePlan = applicationScopedPlan(source, target);
         await pauseScreen(() => box("Sync Complete", [
           `Backup: ${backup}`,
-          `All-profile extension flags updated: ${appScopeResult.updated}`,
+          ...applicationScopedSummaryLines(appScopePlan),
         ]), "Continue");
       } else if (action === "extensions") {
         const source = await chooseEditor(editors.filter((e) => e.id === "vscode" || e.id === "cursor"), "Extension source", editors);
@@ -2046,7 +2184,7 @@ async function runInteractive() {
             `Planned actions: ${tasks.length}`,
             `  - Install/update: ${installsAfterPatches.length}`,
             `  - Uninstall: ${uninstalls.length}`,
-            `All-profile flags to update: ${appScopePlan.ids.length}`,
+            `All-profile flag differences: ${appScopePlan.ids.length}`,
             `Replaced (alias): ${aliasedCount}`,
             `Ignored: ${ignoredCount}`,
             `Target CLI: ${target.cliPath || "not found"}`,
@@ -2061,27 +2199,11 @@ async function runInteractive() {
         };
 
         if (!tasks.length) {
-          if (appScopePlan.ids.length) {
-            const confirmed = await selectMenu(`Apply ${appScopePlan.ids.length} all-profile extension flags in ${target.id}?`, [
-              { key: "y", label: "Yes", value: "yes" },
-              { key: "n", label: "No", value: "no" },
-            ], {
-              defaultIndex: 0,
-              fallback: `Apply all-profile extension flags? [Y/n] `,
-              renderFrame: renderInstall,
-            });
-            if (confirmed !== "yes") continue;
-            const appScopeResult = syncApplicationScopedExtensions(source, target);
-            await pauseScreen(() => box("Extension Sync", [
-              `All-profile extension flags updated: ${appScopeResult.updated}`,
-              appScopeResult.backup ? `Backup: ${appScopeResult.backup}` : "No backup needed.",
-            ]), "Continue");
-            continue;
-          }
           await pauseScreen(() => {
             box("Extension Sync", [
               `Mode: ${modeLabel(mode)}`,
               "No actions needed. Extensions already match the selected mode.",
+              ...applicationScopedSummaryLines(appScopePlan),
             ]);
           }, "Continue");
           continue;
@@ -2101,13 +2223,12 @@ async function runInteractive() {
         line("Starting extension sync...");
         line("");
         const result = await syncExtensions(source, target, tasks);
-        const appScopeResult = syncApplicationScopedExtensions(source, target);
         line("");
         await pauseScreen(() => box("Sync Complete", [
           `Succeeded: ${result.ok}/${result.attempted}`,
           `Failed: ${result.failed.length}`,
-          `All-profile extension flags updated: ${appScopeResult.updated}`,
-          result.failed.length ? "Failure details were saved to logs/" : "No failures."
+          ...applicationScopedSummaryLines(appScopePlan),
+          result.failed.length ? "Failure details were saved to logs/" : "No failures.",
         ]), "Continue");
       }
     }
