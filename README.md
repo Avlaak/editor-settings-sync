@@ -96,16 +96,17 @@ Status colors in an interactive terminal:
 - red: extension is missing in the target editor
 - green: required fork patch (`patch for ...`; not counted as extra)
 - orange: target has a different or older version
-- cyan: extension is replaced by an editor alias (`replaced by ...`)
+- cyan: extension is replaced by another ID (`replaced by ...`)
 - blue: extension is ignored because it is native to a specific editor
 
-VS Code ↔ Cursor ↔ Devin aliases (shown as `replaced by ...` with both versions; not reinstalled):
+Extension replacements (shown as `replaced by ...` with both versions; wizard installs the target ID):
 
 - `ms-python.vscode-pylance` ↔ `anysphere.cursorpyright` ↔ `codeium.windsurfpyright`
 - `ms-vscode-remote.remote-containers` ↔ `anysphere.remote-containers`
 - `ms-vscode-remote.remote-ssh` ↔ `anysphere.remote-ssh`
+- `ms-dotnettools.csharp` → `dotnetdev-kr-custom.csharp` (same target ID in every editor, including Antigravity IDE)
 
-When installing aliases on Cursor, the wizard uses the VS Code extension ID and Cursor maps it to its replacement.
+When installing replacements, the wizard uses the target extension ID (for example `dotnetdev-kr-custom.csharp` or `anysphere.cursorpyright`).
 
 Fork-only extension patches (shown in green as `patch for ...`; installed with missing extensions in fork targets, never in VS Code):
 
@@ -142,7 +143,7 @@ from `globalStorage/storage.json`, backs them up under `backups/`, and should be
 
 Built-in editor-native ignore list:
 
-- Visual Studio Code: `ms-vscode.cpp-devtools`, `ms-dotnettools.csdevkit`, `ms-dotnettools.csharp`
+- Visual Studio Code: `ms-vscode.cpp-devtools`, `ms-dotnettools.csdevkit`
 
 ## Extension Sync Modes
 

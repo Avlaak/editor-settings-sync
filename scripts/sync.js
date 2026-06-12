@@ -35,16 +35,17 @@ const ANSI = {
 };
 
 const EDITOR_EXTENSION_IGNORE = {
-  vscode: new Set(["ms-vscode.cpp-devtools", "ms-dotnettools.csdevkit", "ms-dotnettools.csharp"]),
+  vscode: new Set(["ms-vscode.cpp-devtools", "ms-dotnettools.csdevkit"]),
 };
 
-const EXTENSION_ALIASES = [
+// Per-editor extension IDs for the same logical extension. Use `default` when every
+// target editor should install the same replacement ID (for example Antigravity IDE).
+const EXTENSION_REPLACEMENTS = [
   { vscode: "ms-python.vscode-pylance", cursor: "anysphere.cursorpyright", devin: "codeium.windsurfpyright" },
   { vscode: "ms-vscode-remote.remote-containers", cursor: "anysphere.remote-containers" },
   { vscode: "ms-vscode-remote.remote-ssh", cursor: "anysphere.remote-ssh" },
+  { vscode: "ms-dotnettools.csharp", default: "dotnetdev-kr-custom.csharp" },
 ];
-
-const ALIAS_EDITORS = new Set(["vscode", "cursor", "devin"]);
 
 const EXTENSION_PATCHES = [
   {
@@ -58,10 +59,14 @@ for (const rule of EXTENSION_PATCHES) {
   EXTENSION_PATCH_BY_ID.set(rule.patch.toLowerCase(), rule.requires.toLowerCase());
 }
 
-const EXTENSION_ALIAS_BY_ID = new Map();
-for (const pair of EXTENSION_ALIASES) {
-  for (const extId of Object.values(pair)) {
-    EXTENSION_ALIAS_BY_ID.set(extId.toLowerCase(), pair);
+const EXTENSION_REPLACEMENT_BY_ID = new Map();
+for (const group of EXTENSION_REPLACEMENTS) {
+  for (const [key, extId] of Object.entries(group)) {
+    if (key === "default" || !extId) continue;
+    EXTENSION_REPLACEMENT_BY_ID.set(extId.toLowerCase(), group);
+  }
+  if (group.default) {
+    EXTENSION_REPLACEMENT_BY_ID.set(group.default.toLowerCase(), group);
   }
 }
 
@@ -734,10 +739,8 @@ function extensionEntries(filePath) {
 }
 
 function targetExtensionIdsFor(sourceExtensionId, targetEditorId) {
-  const id = sourceExtensionId.toLowerCase();
-  const ids = new Set([id, extensionInstallId(id, targetEditorId)]);
-  const alias = extensionAliasCounterpart(id, targetEditorId);
-  if (alias) ids.add(alias);
+  const ids = canonicalExtensionIds(sourceExtensionId);
+  ids.add(extensionInstallId(sourceExtensionId, targetEditorId));
   return ids;
 }
 
@@ -923,33 +926,42 @@ function patchInstallBlocked(row, analysis, mode) {
   ));
 }
 
-function editorsUseExtensionAliases(sourceEditorId, targetEditorId) {
-  return ALIAS_EDITORS.has(sourceEditorId) && ALIAS_EDITORS.has(targetEditorId);
+function extensionReplacementGroup(extensionId) {
+  return EXTENSION_REPLACEMENT_BY_ID.get(extensionId.toLowerCase()) || null;
 }
 
-function extensionAliasCounterpart(extensionId, targetEditorId) {
-  const pair = EXTENSION_ALIAS_BY_ID.get(extensionId.toLowerCase());
-  if (!pair) return null;
-  const counterpart = pair[targetEditorId];
-  return counterpart ? counterpart.toLowerCase() : null;
+function groupExtensionIds(group) {
+  const ids = new Set();
+  for (const extId of Object.values(group)) {
+    if (typeof extId === "string" && extId) ids.add(extId.toLowerCase());
+  }
+  return ids;
 }
 
-function sourceHasExtensionEquivalent(sourceExts, extensionId, sourceEditorId, targetEditorId) {
-  const id = extensionId.toLowerCase();
-  if (sourceExts.has(id)) return true;
-  if (!editorsUseExtensionAliases(sourceEditorId, targetEditorId)) return false;
-  const counterpart = extensionAliasCounterpart(id, sourceEditorId);
-  return counterpart ? sourceExts.has(counterpart) : false;
+function canonicalExtensionIds(extensionId) {
+  const group = extensionReplacementGroup(extensionId);
+  if (!group) return new Set([extensionId.toLowerCase()]);
+  return groupExtensionIds(group);
+}
+
+function extensionReplacementForTarget(extensionId, targetEditorId) {
+  const group = extensionReplacementGroup(extensionId);
+  if (!group) return null;
+  if (group.default) return group.default.toLowerCase();
+  const targetId = group[targetEditorId];
+  return targetId ? targetId.toLowerCase() : null;
+}
+
+function sourceHasExtensionEquivalent(sourceExts, extensionId) {
+  for (const equivalentId of canonicalExtensionIds(extensionId)) {
+    if (sourceExts.has(equivalentId)) return true;
+  }
+  return false;
 }
 
 function extensionInstallId(extensionId, targetEditorId) {
-  const pair = EXTENSION_ALIAS_BY_ID.get(extensionId.toLowerCase());
-  if (!pair) return extensionId.toLowerCase();
-  if (targetEditorId === "cursor" || targetEditorId === "vscode") {
-    return pair.vscode;
-  }
-  const targetAlias = pair[targetEditorId];
-  return targetAlias ? targetAlias.toLowerCase() : extensionId.toLowerCase();
+  const replacement = extensionReplacementForTarget(extensionId, targetEditorId);
+  return replacement || extensionId.toLowerCase();
 }
 
 function compareVersions(left, right) {
@@ -970,10 +982,17 @@ function compareVersions(left, right) {
 
 function extensionMatch(sourceEditorId, targetEditorId, id, sourceVersion, targetExts) {
   const idLower = id.toLowerCase();
+  const expected = extensionReplacementForTarget(idLower, targetEditorId);
+  if (expected && targetExts.has(expected)) {
+    return {
+      status: "aliased",
+      aliasId: expected,
+      targetVersion: targetExts.get(expected),
+    };
+  }
 
-  if (editorsUseExtensionAliases(sourceEditorId, targetEditorId)) {
-    const counterpart = extensionAliasCounterpart(idLower, targetEditorId);
-    if (counterpart && targetExts.has(counterpart)) {
+  for (const counterpart of canonicalExtensionIds(idLower)) {
+    if (counterpart !== idLower && targetExts.has(counterpart)) {
       return {
         status: "aliased",
         aliasId: counterpart,
