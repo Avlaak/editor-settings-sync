@@ -93,7 +93,8 @@ Extension differences are shown by scope:
 
 Status colors in an interactive terminal:
 
-- red: extension is missing in the target editor (`patch for ...` when a required fork patch is missing)
+- red: extension is missing in the target editor
+- green: required fork patch (`patch for ...`; not counted as extra)
 - orange: target has a different or older version
 - cyan: extension is replaced by an editor alias (`replaced by ...`)
 - blue: extension is ignored because it is native to a specific editor
@@ -106,7 +107,7 @@ VS Code ↔ Cursor ↔ Devin aliases (shown as `replaced by ...` with both versi
 
 When installing aliases on Cursor, the wizard uses the VS Code extension ID and Cursor maps it to its replacement.
 
-Fork-only extension patches (shown in red as `patch for ...`; installed with missing extensions in fork targets, never in VS Code):
+Fork-only extension patches (shown in green as `patch for ...`; installed with missing extensions in fork targets, never in VS Code):
 
 - `embedd-team.cpptools-proxy-patcher` when `ms-vscode.cpptools` is present
 

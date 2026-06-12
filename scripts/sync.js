@@ -29,6 +29,7 @@ const ANSI = {
   magenta: "\x1b[35m",
   cyan: "\x1b[36m",
   blue: "\x1b[34m",
+  green: "\x1b[32m",
   dim: "\x1b[2m",
   reset: "\x1b[0m",
 };
@@ -51,6 +52,11 @@ const EXTENSION_PATCHES = [
     patch: "embedd-team.cpptools-proxy-patcher",
   },
 ];
+
+const EXTENSION_PATCH_BY_ID = new Map();
+for (const rule of EXTENSION_PATCHES) {
+  EXTENSION_PATCH_BY_ID.set(rule.patch.toLowerCase(), rule.requires.toLowerCase());
+}
 
 const EXTENSION_ALIAS_BY_ID = new Map();
 for (const pair of EXTENSION_ALIASES) {
@@ -878,6 +884,14 @@ function isForkEditor(editorId) {
   return FORK_EDITOR_IDS.has(editorId);
 }
 
+function extensionPatchRequires(patchId) {
+  return EXTENSION_PATCH_BY_ID.get(patchId.toLowerCase()) || null;
+}
+
+function isMissingPatchRow(row) {
+  return row.status === "patch" && row.targetVersion === undefined;
+}
+
 function appendExtensionPatchRows(rows, target, sourceScope, sourceExts, targetExts) {
   if (!isForkEditor(target.id)) return;
 
@@ -895,7 +909,7 @@ function appendExtensionPatchRows(rows, target, sourceScope, sourceExts, targetE
       sourceVersion: undefined,
       targetVersion: undefined,
       patchFor: requiresId,
-      status: "missing",
+      status: "patch",
     });
   }
 }
@@ -1020,6 +1034,19 @@ function buildUnifiedRows(source, target, sourceScopes, targetScopes) {
           sourceVersion: undefined,
           targetVersion,
           status: "ignored",
+        });
+        continue;
+      }
+      const patchFor = extensionPatchRequires(id);
+      if (patchFor && isForkEditor(target.id)) {
+        rows.push({
+          scope: sourceScope.name,
+          scopeDisplayName: sourceScope.displayName || sourceScope.name,
+          id,
+          sourceVersion: undefined,
+          targetVersion,
+          patchFor,
+          status: "patch",
         });
         continue;
       }
@@ -2003,6 +2030,7 @@ function pairSummaryLines(source, target, analysis) {
     `Missing in target: ${counts.missing || 0}`,
     `Older in target:   ${counts.older || 0}`,
     `Different version: ${counts.different || 0}`,
+    `Required patches:  ${counts.patch || 0}`,
     `Extra in target:   ${counts.extra || 0}`,
     `Replaced (alias):  ${counts.aliased || 0}`,
     `Ignored:           ${counts.ignored || 0}`,
@@ -2061,9 +2089,10 @@ function bufferExtensionRows(rows, sourceId, targetId) {
 
 function statusLabel(row) {
   const status = typeof row === "string" ? row : row.status;
-  if (status === "missing") {
-    return color(row.patchFor ? `patch for ${row.patchFor}` : "missing", ANSI.red);
+  if (status === "patch") {
+    return color(`patch for ${row.patchFor}`, ANSI.green);
   }
+  if (status === "missing") return color("missing", ANSI.red);
   if (status === "extra") return color("extra", ANSI.dim);
   if (status === "older") return color("older", ANSI.orange);
   if (status === "different") return color("different", ANSI.magenta);
@@ -2222,7 +2251,7 @@ async function runInteractive() {
           if (patchInstallBlocked(row, analysis, mode)) continue;
 
           if (mode === "missing") {
-            if (row.status === "missing") {
+            if (row.status === "missing" || isMissingPatchRow(row)) {
               tasks.push({
                 id: extensionInstallId(row.id, target.id),
                 sourceId: row.id,
@@ -2232,7 +2261,7 @@ async function runInteractive() {
               });
             }
           } else if (mode === "missing_update") {
-            if (row.status === "missing" || row.status === "older") {
+            if (row.status === "missing" || row.status === "older" || isMissingPatchRow(row)) {
               tasks.push({
                 id: extensionInstallId(row.id, target.id),
                 sourceId: row.id,
@@ -2242,7 +2271,7 @@ async function runInteractive() {
               });
             }
           } else if (mode === "full_keep") {
-            if (row.status === "missing" || row.status === "older" || row.status === "different") {
+            if (row.status === "missing" || row.status === "older" || row.status === "different" || isMissingPatchRow(row)) {
               tasks.push({
                 id: extensionInstallId(row.id, target.id),
                 sourceId: row.id,
@@ -2252,7 +2281,7 @@ async function runInteractive() {
               });
             }
           } else if (mode === "full_clean") {
-            if (row.status === "missing" || row.status === "older" || row.status === "different") {
+            if (row.status === "missing" || row.status === "older" || row.status === "different" || isMissingPatchRow(row)) {
               tasks.push({
                 id: extensionInstallId(row.id, target.id),
                 sourceId: row.id,
