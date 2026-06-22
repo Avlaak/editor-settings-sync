@@ -1164,11 +1164,27 @@ function readProfileNames(snapshot) {
   return map;
 }
 
+function readApplicationScopedExtensionIds(snapshot) {
+  const ids = new Set();
+  const filePath = path.join(snapshot, "extensions", "extensions.json");
+  if (!exists(filePath)) return ids;
+  const data = readJson(filePath);
+  if (!Array.isArray(data)) return ids;
+  for (const item of data) {
+    if (item && item.metadata && item.metadata.isApplicationScoped === true) {
+      const id = item.identifier && item.identifier.id;
+      if (id) ids.add(id.toLowerCase());
+    }
+  }
+  return ids;
+}
+
 function readExtensionScopes(snapshot, editor) {
   const profileNames = readProfileNames(snapshot);
   const globalExtensions = readExtensionMap(snapshot);
   const scopes = [{ name: "global", displayName: "Default", extensions: globalExtensions }];
   if (!supportsProfiles(editor)) return scopes;
+  const appScopedIds = readApplicationScopedExtensionIds(snapshot);
   const profilesDir = path.join(snapshot, "user", "profiles");
   const registered = new Set(profileNames.keys());
   for (const profile of listProfileDirs(profilesDir, registered)) {
@@ -1176,6 +1192,11 @@ function readExtensionScopes(snapshot, editor) {
     const profileMap = profileExtensionMap(path.join(profilesDir, profile));
     for (const [id, version] of profileMap) {
       if (globalExtensions.has(id)) {
+        profileMap.set(id, globalExtensions.get(id));
+      }
+    }
+    for (const id of appScopedIds) {
+      if (!profileMap.has(id) && globalExtensions.has(id)) {
         profileMap.set(id, globalExtensions.get(id));
       }
     }
