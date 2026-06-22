@@ -1166,16 +1166,23 @@ function readProfileNames(snapshot) {
 
 function readExtensionScopes(snapshot, editor) {
   const profileNames = readProfileNames(snapshot);
-  const scopes = [{ name: "global", displayName: "Default", extensions: readExtensionMap(snapshot) }];
+  const globalExtensions = readExtensionMap(snapshot);
+  const scopes = [{ name: "global", displayName: "Default", extensions: globalExtensions }];
   if (!supportsProfiles(editor)) return scopes;
   const profilesDir = path.join(snapshot, "user", "profiles");
   const registered = new Set(profileNames.keys());
   for (const profile of listProfileDirs(profilesDir, registered)) {
     const displayName = profileNames.get(profile) || profile;
+    const profileMap = profileExtensionMap(path.join(profilesDir, profile));
+    for (const [id, version] of profileMap) {
+      if (globalExtensions.has(id)) {
+        profileMap.set(id, globalExtensions.get(id));
+      }
+    }
     scopes.push({
       name: `profile:${profile}`,
       displayName,
-      extensions: profileExtensionMap(path.join(profilesDir, profile)),
+      extensions: profileMap,
     });
   }
   return scopes;
