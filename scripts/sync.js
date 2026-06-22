@@ -133,6 +133,17 @@ const EDITORS = [
       },
     },
   },
+  {
+    id: "kiro",
+    name: "Kiro",
+    supportsProfiles: true,
+    cli: ["kiro"],
+    dirs: {
+      darwin: { user: "~/Library/Application Support/Kiro/User", extensions: "~/.kiro/extensions", app: "/Applications/Kiro.app" },
+      linux: { user: "${XDG_CONFIG_HOME:-~/.config}/Kiro/User", extensions: "~/.kiro/extensions", app: ["/opt/Kiro", "/usr/share/kiro"] },
+      win32: { user: "%APPDATA%\\Kiro\\User", extensions: "%USERPROFILE%\\.kiro\\extensions", app: ["%LOCALAPPDATA%\\Programs\\Kiro", "%ProgramFiles%\\Kiro"] },
+    },
+  },
 ];
 
 const FORK_EDITOR_IDS = new Set(EDITORS.map((editor) => editor.id).filter((id) => id !== "vscode"));

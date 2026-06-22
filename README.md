@@ -10,6 +10,7 @@ It detects installed editors, collects local snapshots, compares settings/extens
 - Cursor
 - Antigravity IDE
 - Devin, formerly Windsurf
+- Kiro
 
 `windsurf` is still accepted as a compatibility alias for `devin`, but new runtime snapshots are written under `snapshots/devin`.
 
