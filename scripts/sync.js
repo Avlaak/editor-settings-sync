@@ -6,6 +6,7 @@ const os = require("os");
 const path = require("path");
 const readline = require("readline");
 const zlib = require("zlib");
+const crypto = require("crypto");
 const { spawnSync } = require("child_process");
 
 const ROOT = path.resolve(__dirname, "..");
@@ -421,16 +422,33 @@ function copyProfiles(src, dst, { includeExtensions = false, registeredLocations
   }
 }
 
+function generateProfileLocation(existingLocations) {
+  for (let i = 0; i < 100; i++) {
+    const loc = crypto.randomBytes(4).readInt32BE(0).toString(16);
+    if (!existingLocations.has(loc)) return loc;
+  }
+  throw new Error("Failed to generate unique profile location after 100 attempts");
+}
+
 function syncProfilesByName(sourceProfilesDir, targetProfilesDir, sourceSnapshotDir, targetUserDir) {
-  if (!isDir(sourceProfilesDir) || !isDir(targetUserDir)) return { copied: [], skipped: [] };
+  if (!isDir(sourceProfilesDir) || !isDir(targetUserDir)) return { copied: [], skipped: [], created: [] };
 
   const sourceNames = readProfileNames(sourceSnapshotDir);
   const sourceByName = new Map([...sourceNames.entries()].map(([location, name]) => [name, location]));
-  const targetStorage = readJson(path.join(targetUserDir, "globalStorage", "storage.json"));
+  const targetStoragePath = path.join(targetUserDir, "globalStorage", "storage.json");
+  const targetStorage = readJson(targetStoragePath);
   const copied = [];
   const skipped = [];
+  const created = [];
+
+  const targetProfilesByName = new Map();
+  for (const profile of (targetStorage && targetStorage.userDataProfiles) || []) {
+    if (profile.name && profile.location) targetProfilesByName.set(profile.name, profile.location);
+  }
 
   ensureDir(targetProfilesDir);
+
+  // Pass 1: copy into existing target profiles matched by name.
   for (const profile of (targetStorage && targetStorage.userDataProfiles) || []) {
     const targetLocation = profile.location;
     const profileName = profile.name;
@@ -452,7 +470,43 @@ function syncProfilesByName(sourceProfilesDir, targetProfilesDir, sourceSnapshot
     copied.push(profileName);
   }
 
-  return { copied, skipped };
+  // Pass 2: create profiles that exist in source but not in target.
+  const sourceSnapshotStorage = readJson(path.join(sourceSnapshotDir, "user", "globalStorage", "storage.json"));
+  const sourceProfiles = (sourceSnapshotStorage && sourceSnapshotStorage.userDataProfiles) || [];
+  const newEntries = [];
+  const existingLocations = new Set(
+    ((targetStorage && targetStorage.userDataProfiles) || []).map((p) => p.location).filter(Boolean),
+  );
+
+  for (const sourceProfile of sourceProfiles) {
+    const profileName = sourceProfile.name;
+    const sourceLocation = sourceProfile.location;
+    if (!profileName || !sourceLocation || isBuiltinProfileLocation(sourceLocation)) continue;
+    if (targetProfilesByName.has(profileName)) continue;
+
+    const sourceProfileDir = path.join(sourceProfilesDir, sourceLocation);
+    if (!isDir(sourceProfileDir)) continue;
+
+    const newLocation = generateProfileLocation(existingLocations);
+    existingLocations.add(newLocation);
+
+    const entry = { location: newLocation, name: profileName };
+    if (sourceProfile.useDefaultFlags) entry.useDefaultFlags = sourceProfile.useDefaultFlags;
+    newEntries.push(entry);
+
+    copyProfileContents(sourceProfileDir, path.join(targetProfilesDir, newLocation), PROFILE_USER_ITEMS);
+    created.push(profileName);
+  }
+
+  // Write new profile entries into target storage.json.
+  if (newEntries.length && targetStorage) {
+    if (!Array.isArray(targetStorage.userDataProfiles)) targetStorage.userDataProfiles = [];
+    targetStorage.userDataProfiles.push(...newEntries);
+    ensureDir(path.dirname(targetStoragePath));
+    fs.writeFileSync(targetStoragePath, JSON.stringify(targetStorage, null, 4) + "\n");
+  }
+
+  return { copied, skipped, created };
 }
 
 function listOrphanProfileDirs(editor) {
@@ -1338,6 +1392,14 @@ function backupAndCopy(source, target, items) {
     const targetItem = path.join(target.userDir, item);
     if (exists(targetItem)) copyRecursive(targetItem, path.join(backupDir, item));
   }
+  // Back up storage.json before profile sync may modify it.
+  const storageSrc = path.join(target.userDir, "globalStorage", "storage.json");
+  if (exists(storageSrc)) {
+    const storageDst = path.join(backupDir, "globalStorage", "storage.json");
+    ensureDir(path.dirname(storageDst));
+    copyRecursive(storageSrc, storageDst);
+  }
+  let profileSyncResult = null;
   for (const item of items) {
     const sourceItem = path.join(sourceUser, item);
     if (!exists(sourceItem)) continue;
@@ -1348,14 +1410,14 @@ function backupAndCopy(source, target, items) {
         const registered = registeredProfileLocations(target.userDir);
         copyProfiles(sourceItem, targetItem, { registeredLocations: registered });
       } else {
-        syncProfilesByName(sourceItem, targetItem, path.join(SNAPSHOTS, source.id), target.userDir);
+        profileSyncResult = syncProfilesByName(sourceItem, targetItem, path.join(SNAPSHOTS, source.id), target.userDir);
       }
       continue;
     }
     rmrf(targetItem);
     copyRecursive(sourceItem, targetItem);
   }
-  return backupDir;
+  return { backupDir, profileSyncResult };
 }
 
 async function syncExtensions(source, target, tasks) {
@@ -2246,11 +2308,24 @@ async function runInteractive() {
         if (supportsProfiles(target)) {
           itemsToCopy.push("profiles");
         }
-        const backup = backupAndCopy(source, target, itemsToCopy);
+        const { backupDir: backup, profileSyncResult } = backupAndCopy(source, target, itemsToCopy);
         const appScopePlan = applicationScopedPlan(source, target);
+        const profileLines = [];
+        if (profileSyncResult) {
+          if (profileSyncResult.copied.length) {
+            profileLines.push(`Profiles updated: ${profileSyncResult.copied.join(", ")}`);
+          }
+          if (profileSyncResult.created.length) {
+            profileLines.push(`Profiles created: ${profileSyncResult.created.join(", ")}`);
+          }
+          if (profileSyncResult.skipped.length) {
+            profileLines.push(`Profiles skipped (no source match): ${profileSyncResult.skipped.join(", ")}`);
+          }
+        }
         await pauseScreen(() => box("Sync Complete", [
           `Backup: ${backup}`,
           "Profile settings were merged in place; extensions.json in each profile was left untouched.",
+          ...profileLines,
           ...profileHealthSummaryLines(target),
           ...applicationScopedSummaryLines(appScopePlan),
         ]), "Continue");

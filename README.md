@@ -122,6 +122,10 @@ Cross-editor profile sync matches profiles **by name**, not by internal profile 
 assign different ids to the same named profile; copying profile folders blindly creates orphan directories under
 `User/profiles/`. The dashboard shows them as `+N orphan`.
 
+If the target editor has no profile with a matching name, the wizard creates it automatically: it generates a
+unique profile folder id, registers the profile in `globalStorage/storage.json`, and copies the profile contents.
+Built-in profiles such as `Agents` (`builtin/agents`) are never created in the target editor.
+
 Settings/profile sync copies only `settings.json`, `keybindings.json`, snippets, MCP, and related profile files.
 It never overwrites per-profile `extensions.json`. Profile folders are merged in place instead of being deleted
 first.
